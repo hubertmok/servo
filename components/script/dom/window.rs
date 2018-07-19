@@ -56,7 +56,7 @@ use ipc_channel::ipc::IpcSender;
 use ipc_channel::router::ROUTER;
 use js::jsapi::{JSAutoCompartment, JSContext};
 use js::jsapi::{JS_GC, JS_GetRuntime};
-use js::jsval::UndefinedValue;
+use js::jsval::{JSVal, UndefinedValue};
 use js::rust::HandleValue;
 use layout_image::fetch_image_for_layout;
 use microtask::MicrotaskQueue;
@@ -552,6 +552,29 @@ impl WindowMethods for Window {
         receiver.recv().unwrap();
     }
 
+    // https://html.spec.whatwg.org/multipage/#dom-open
+    fn Open(&self,
+            url: DOMString,
+            target: DOMString,
+            features: DOMString)
+            -> Option<DomRoot<WindowProxy>> {
+        self.window_proxy().open(url, target, features)
+    }
+
+    #[allow(unsafe_code)]
+    // https://html.spec.whatwg.org/multipage/#dom-opener
+    unsafe fn Opener(&self, cx: *mut JSContext) -> JSVal {
+        self.window_proxy().opener(cx)
+    }
+
+    #[allow(unsafe_code)]
+    // https://html.spec.whatwg.org/multipage/#dom-opener
+    unsafe fn SetOpener(&self, _cx: *mut JSContext, _value: HandleValue) {
+        // TODO: Step 2.
+        // NOTE: for now assuming value is null, and disowning.
+        self.window_proxy().disown();
+    }
+
     // https://html.spec.whatwg.org/multipage/#dom-window-closed
     fn Closed(&self) -> bool {
         self.window_proxy.get()
@@ -561,13 +584,13 @@ impl WindowMethods for Window {
 
     // https://html.spec.whatwg.org/multipage/#dom-window-close
     fn Close(&self) {
+        let window_proxy = self.window_proxy();
         // Note: check the length of the "session history", as opposed to the joint session history?
         // see https://github.com/whatwg/html/issues/3734
         if let Ok(history_length) = self.History().GetLength() {
-            // TODO: allow auxilliary browsing contexts created by script to be script-closeable,
-            // regardless of history length.
+            let is_auxiliary = window_proxy.is_auxiliary();
             // https://html.spec.whatwg.org/multipage/#script-closable
-            let is_script_closable = self.is_top_level() && history_length == 1;
+            let is_script_closable = (self.is_top_level() && history_length == 1) || is_auxiliary;
             if is_script_closable {
                 let doc = self.Document();
                 // https://html.spec.whatwg.org/multipage/#closing-browsing-contexts
