@@ -5,19 +5,6 @@
 use servo::msg::constellation_msg::{self, Key, KeyModifiers};
 use winit::VirtualKeyCode;
 
-bitflags! {
-    pub struct WinitKeyModifiers: u8 {
-        const LEFT_CONTROL = 1;
-        const RIGHT_CONTROL = 2;
-        const LEFT_SHIFT = 4;
-        const RIGHT_SHIFT = 8;
-        const LEFT_ALT = 16;
-        const RIGHT_ALT = 32;
-        const LEFT_SUPER = 64;
-        const RIGHT_SUPER = 128;
-    }
-}
-
 // Some shortcuts use Cmd on Mac and Control on other systems.
 #[cfg(target_os = "macos")]
 pub const CMD_OR_CONTROL: KeyModifiers = KeyModifiers::SUPER;
@@ -127,7 +114,7 @@ pub fn char_to_script_key(c: char) -> Option<constellation_msg::Key> {
         '\\' => Some(Key::Backslash),
         '}' => Some(Key::RightBracket),
         ']' => Some(Key::RightBracket),
-        _ => None
+        _ => None,
     }
 }
 
@@ -243,109 +230,16 @@ pub fn winit_key_to_script_key(key: VirtualKeyCode) -> Result<constellation_msg:
     })
 }
 
-pub fn winit_mods_to_script_mods(modifiers: WinitKeyModifiers) -> constellation_msg::KeyModifiers {
-    let mut result = constellation_msg::KeyModifiers::empty();
-    if modifiers.intersects(WinitKeyModifiers::LEFT_SHIFT | WinitKeyModifiers::RIGHT_SHIFT) {
-        result.insert(KeyModifiers::SHIFT);
-    }
-    if modifiers.intersects(WinitKeyModifiers::LEFT_CONTROL | WinitKeyModifiers::RIGHT_CONTROL) {
-        result.insert(KeyModifiers::CONTROL);
-    }
-    if modifiers.intersects(WinitKeyModifiers::LEFT_ALT | WinitKeyModifiers::RIGHT_ALT) {
-        result.insert(KeyModifiers::ALT);
-    }
-    if modifiers.intersects(WinitKeyModifiers::LEFT_SUPER | WinitKeyModifiers::RIGHT_SUPER) {
-        result.insert(KeyModifiers::SUPER);
-    }
-    result
-}
-
 pub fn is_printable(key_code: VirtualKeyCode) -> bool {
     use winit::VirtualKeyCode::*;
     match key_code {
-        Escape |
-        F1 |
-        F2 |
-        F3 |
-        F4 |
-        F5 |
-        F6 |
-        F7 |
-        F8 |
-        F9 |
-        F10 |
-        F11 |
-        F12 |
-        F13 |
-        F14 |
-        F15 |
-        Snapshot |
-        Scroll |
-        Pause |
-        Insert |
-        Home |
-        Delete |
-        End |
-        PageDown |
-        PageUp |
-        Left |
-        Up |
-        Right |
-        Down |
-        Back |
-        LAlt |
-        LControl |
-        LShift |
-        LWin |
-        Mail |
-        MediaSelect |
-        MediaStop |
-        Mute |
-        MyComputer |
-        NavigateForward |
-        NavigateBackward |
-        NextTrack |
-        NoConvert |
-        PlayPause |
-        Power |
-        PrevTrack |
-        RAlt |
-        RControl |
-        RShift |
-        RWin |
-        Sleep |
-        Stop |
-        VolumeDown |
-        VolumeUp |
-        Wake |
-        WebBack |
-        WebFavorites |
-        WebForward |
-        WebHome |
-        WebRefresh |
-        WebSearch |
-        WebStop => false,
+        Escape | F1 | F2 | F3 | F4 | F5 | F6 | F7 | F8 | F9 | F10 | F11 | F12 | F13 | F14 |
+        F15 | Snapshot | Scroll | Pause | Insert | Home | Delete | End | PageDown | PageUp |
+        Left | Up | Right | Down | Back | LAlt | LControl | LShift | LWin | Mail |
+        MediaSelect | MediaStop | Mute | MyComputer | NavigateForward | NavigateBackward |
+        NextTrack | NoConvert | PlayPause | Power | PrevTrack | RAlt | RControl | RShift |
+        RWin | Sleep | Stop | VolumeDown | VolumeUp | Wake | WebBack | WebFavorites |
+        WebForward | WebHome | WebRefresh | WebSearch | WebStop => false,
         _ => true,
-    }
-}
-
-/// Detect if given char is default ignorable in unicode
-/// http://www.unicode.org/L2/L2002/02368-default-ignorable.pdf
-pub fn is_identifier_ignorable(ch: &char) -> bool {
-    match *ch {
-        '\u{0000}'...'\u{0008}' | '\u{000E}'...'\u{001F}' |
-            '\u{007F}'...'\u{0084}' | '\u{0086}'...'\u{009F}' |
-            '\u{06DD}' | '\u{070F}' |
-            '\u{180B}'...'\u{180D}' | '\u{180E}' |
-            '\u{200C}'...'\u{200F}' |
-            '\u{202A}'...'\u{202E}' | '\u{2060}'...'\u{2063}' |
-            '\u{2064}'...'\u{2069}' | '\u{206A}'...'\u{206F}' |
-            '\u{FE00}'...'\u{FE0F}' | '\u{FEFF}' |
-            '\u{FFF0}'...'\u{FFF8}' | '\u{FFF9}'...'\u{FFFB}' |
-            '\u{1D173}'...'\u{1D17A}' | '\u{E0000}' |
-            '\u{E0001}' |
-            '\u{E0002}'...'\u{E001F}' | '\u{E0020}'...'\u{E007F}' |
-            '\u{E0080}'...'\u{E0FFF}' => true,
-        _ => false
     }
 }

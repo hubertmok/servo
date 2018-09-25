@@ -8,7 +8,6 @@ use embedder_traits::EventLoopWaker;
 use euclid::TypedScale;
 #[cfg(feature = "gleam")]
 use gleam::gl;
-use ipc_channel::ipc::IpcSender;
 use msg::constellation_msg::{Key, KeyModifiers, KeyState, TopLevelBrowsingContextId, TraversalDirection};
 use script_traits::{MouseButton, TouchEventType, TouchId};
 use servo_geometry::{DeviceIndependentPixel, DeviceUintLength};
@@ -75,7 +74,7 @@ pub enum WindowEvent {
     /// Sent when Ctr+R/Apple+R is called to reload the current page.
     Reload(TopLevelBrowsingContextId),
     /// Create a new top level browsing context
-    NewBrowser(ServoUrl, IpcSender<TopLevelBrowsingContextId>),
+    NewBrowser(ServoUrl, TopLevelBrowsingContextId),
     /// Close a top level browsing context
     CloseBrowser(TopLevelBrowsingContextId),
     /// Panic a top level browsing context.
@@ -137,8 +136,6 @@ pub trait WindowMethods {
     fn create_event_loop_waker(&self) -> Box<EventLoopWaker>;
     /// Get the coordinates of the native window, the screen and the framebuffer.
     fn get_coordinates(&self) -> EmbedderCoordinates;
-    /// Does this window support a clipboard
-    fn supports_clipboard(&self) -> bool;
     /// Set whether the application is currently animating.
     /// Typically, when animations are active, the window
     /// will want to avoid blocking on UI events, and just

@@ -4,24 +4,26 @@
 
 #![deny(unsafe_code)]
 
-#[cfg(target_os = "android")]
-extern crate android_injected_glue;
 #[cfg(not(target_os = "android"))]
 extern crate dirs;
 extern crate embedder_traits;
 extern crate euclid;
 extern crate getopts;
-#[macro_use] extern crate lazy_static;
-#[macro_use] extern crate log;
+#[macro_use]
+extern crate lazy_static;
+#[macro_use]
+extern crate log;
 extern crate num_cpus;
 extern crate rustc_serialize;
-#[macro_use] extern crate serde;
+#[macro_use]
+extern crate serde;
 extern crate servo_geometry;
 extern crate servo_url;
 extern crate url;
 
 pub mod basedir;
-#[allow(unsafe_code)] pub mod opts;
+#[allow(unsafe_code)]
+pub mod opts;
 pub mod prefs;
 
 pub fn servo_version() -> String {

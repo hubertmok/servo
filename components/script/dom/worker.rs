@@ -3,7 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use devtools_traits::{DevtoolsPageInfo, ScriptToDevtoolsControlMsg};
-use dom::abstractworker::{SharedRt, SimpleWorkerErrorHandler};
+use dom::abstractworker::SimpleWorkerErrorHandler;
 use dom::abstractworker::WorkerScriptMsg;
 use dom::bindings::codegen::Bindings::WorkerBinding;
 use dom::bindings::codegen::Bindings::WorkerBinding::WorkerMethods;
@@ -14,21 +14,21 @@ use dom::bindings::reflector::{DomObject, reflect_dom_object};
 use dom::bindings::root::DomRoot;
 use dom::bindings::str::DOMString;
 use dom::bindings::structuredclone::StructuredCloneData;
-use dom::dedicatedworkerglobalscope::DedicatedWorkerGlobalScope;
+use dom::dedicatedworkerglobalscope::{DedicatedWorkerGlobalScope, DedicatedWorkerScriptMsg};
 use dom::eventtarget::EventTarget;
 use dom::globalscope::GlobalScope;
 use dom::messageevent::MessageEvent;
 use dom::workerglobalscope::prepare_workerscope_init;
 use dom_struct::dom_struct;
 use ipc_channel::ipc;
-use js::jsapi::{JSAutoCompartment, JSContext};
+use js::jsapi::{JSAutoCompartment, JSContext, JS_RequestInterruptCallback};
 use js::jsval::UndefinedValue;
 use js::rust::HandleValue;
 use script_traits::WorkerScriptLoadOrigin;
+use servo_channel::{channel, Sender};
 use std::cell::Cell;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Sender, channel};
 use task::TaskOnce;
 
 pub type TrustedWorkerAddress = Trusted<Worker>;
@@ -40,32 +40,32 @@ pub struct Worker {
     #[ignore_malloc_size_of = "Defined in std"]
     /// Sender to the Receiver associated with the DedicatedWorkerGlobalScope
     /// this Worker created.
-    sender: Sender<(TrustedWorkerAddress, WorkerScriptMsg)>,
+    sender: Sender<DedicatedWorkerScriptMsg>,
     #[ignore_malloc_size_of = "Arc"]
     closing: Arc<AtomicBool>,
-    #[ignore_malloc_size_of = "Defined in rust-mozjs"]
-    runtime: Arc<Mutex<Option<SharedRt>>>,
     terminated: Cell<bool>,
 }
 
 impl Worker {
-    fn new_inherited(sender: Sender<(TrustedWorkerAddress, WorkerScriptMsg)>,
-                     closing: Arc<AtomicBool>) -> Worker {
+    fn new_inherited(sender: Sender<DedicatedWorkerScriptMsg>, closing: Arc<AtomicBool>) -> Worker {
         Worker {
             eventtarget: EventTarget::new_inherited(),
             sender: sender,
             closing: closing,
-            runtime: Arc::new(Mutex::new(None)),
             terminated: Cell::new(false),
         }
     }
 
-    pub fn new(global: &GlobalScope,
-               sender: Sender<(TrustedWorkerAddress, WorkerScriptMsg)>,
-               closing: Arc<AtomicBool>) -> DomRoot<Worker> {
-        reflect_dom_object(Box::new(Worker::new_inherited(sender, closing)),
-                           global,
-                           WorkerBinding::Wrap)
+    pub fn new(
+        global: &GlobalScope,
+        sender: Sender<DedicatedWorkerScriptMsg>,
+        closing: Arc<AtomicBool>,
+    ) -> DomRoot<Worker> {
+        reflect_dom_object(
+            Box::new(Worker::new_inherited(sender, closing)),
+            global,
+            WorkerBinding::Wrap,
+        )
     }
 
     // https://html.spec.whatwg.org/multipage/#dom-worker
@@ -93,21 +93,31 @@ impl Worker {
         let worker_id = global.get_next_worker_id();
         if let Some(ref chan) = global.devtools_chan() {
             let pipeline_id = global.pipeline_id();
-                let title = format!("Worker for {}", worker_url);
-                let page_info = DevtoolsPageInfo {
-                    title: title,
-                    url: worker_url.clone(),
-                };
-                let _ = chan.send(ScriptToDevtoolsControlMsg::NewGlobal((pipeline_id, Some(worker_id)),
-                                                                devtools_sender.clone(),
-                                                                page_info));
+            let title = format!("Worker for {}", worker_url);
+            let page_info = DevtoolsPageInfo {
+                title: title,
+                url: worker_url.clone(),
+            };
+            let _ = chan.send(ScriptToDevtoolsControlMsg::NewGlobal(
+                (pipeline_id, Some(worker_id)),
+                devtools_sender.clone(),
+                page_info,
+            ));
         }
 
         let init = prepare_workerscope_init(global, Some(devtools_sender));
 
         DedicatedWorkerGlobalScope::run_worker_scope(
-            init, worker_url, devtools_receiver, worker.runtime.clone(), worker_ref,
-            global.script_chan(), sender, receiver, worker_load_origin, closing);
+            init,
+            worker_url,
+            devtools_receiver,
+            worker_ref,
+            global.script_chan(),
+            sender,
+            receiver,
+            worker_load_origin,
+            closing,
+        );
 
         Ok(worker)
     }
@@ -120,8 +130,7 @@ impl Worker {
         self.terminated.get()
     }
 
-    pub fn handle_message(address: TrustedWorkerAddress,
-                          data: StructuredCloneData) {
+    pub fn handle_message(address: TrustedWorkerAddress, data: StructuredCloneData) {
         let worker = address.root();
 
         if worker.is_terminated() {
@@ -133,7 +142,7 @@ impl Worker {
         let _ac = JSAutoCompartment::new(global.get_cx(), target.reflector().get_jsobject().get());
         rooted!(in(global.get_cx()) let mut message = UndefinedValue());
         data.read(&global, message.handle_mut());
-        MessageEvent::dispatch_jsval(target, &global, message.handle());
+        MessageEvent::dispatch_jsval(target, &global, message.handle(), None);
     }
 
     pub fn dispatch_simple_error(address: TrustedWorkerAddress) {
@@ -151,10 +160,14 @@ impl WorkerMethods for Worker {
 
         // NOTE: step 9 of https://html.spec.whatwg.org/multipage/#dom-messageport-postmessage
         // indicates that a nonexistent communication channel should result in a silent error.
-        let _ = self.sender.send((address, WorkerScriptMsg::DOMMessage(data)));
+        let _ = self.sender.send(DedicatedWorkerScriptMsg::CommonWorker(
+            address,
+            WorkerScriptMsg::DOMMessage(data),
+        ));
         Ok(())
     }
 
+    #[allow(unsafe_code)]
     // https://html.spec.whatwg.org/multipage/#terminate-a-worker
     fn Terminate(&self) {
         // Step 1
@@ -166,9 +179,8 @@ impl WorkerMethods for Worker {
         self.terminated.set(true);
 
         // Step 3
-        if let Some(runtime) = *self.runtime.lock().unwrap() {
-            runtime.request_interrupt();
-        }
+        let cx = self.global().get_cx();
+        unsafe { JS_RequestInterruptCallback(cx) };
     }
 
     // https://html.spec.whatwg.org/multipage/#handler-worker-onmessage

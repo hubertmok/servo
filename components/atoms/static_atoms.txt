@@ -12,6 +12,7 @@ checkbox
 click
 close
 color
+complete
 controllerchange
 cursive
 date
@@ -19,6 +20,7 @@ datetime-local
 dir
 email
 emptied
+ended
 error
 fantasy
 fetch
@@ -34,6 +36,7 @@ invalid
 keydown
 keypress
 left
+ltr
 load
 loadeddata
 loadedmetadata
@@ -63,7 +66,9 @@ readystatechange
 reftest-wait
 reset
 right
+rtl
 sans-serif
+scan
 screen
 scroll-position
 search
@@ -84,3 +89,4 @@ url
 waiting
 webglcontextcreationerror
 week
+width

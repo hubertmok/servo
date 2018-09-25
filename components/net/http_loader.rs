@@ -39,6 +39,7 @@ use net_traits::request::{RedirectMode, Referrer, Request, RequestMode};
 use net_traits::request::{ResponseTainting, ServiceWorkersMode};
 use net_traits::response::{HttpsState, Response, ResponseBody, ResponseType};
 use resource_thread::AuthCache;
+use servo_channel::{channel, Sender};
 use servo_url::{ImmutableOrigin, ServoUrl};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
@@ -48,7 +49,6 @@ use std::mem;
 use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::RwLock;
-use std::sync::mpsc::{channel, Sender};
 use std::thread;
 use time;
 use time::Tm;
@@ -677,7 +677,7 @@ pub fn http_redirect_fetch(request: &mut Request,
     // Step 11
     if response.actual_response().status.map_or(false, |code|
         ((code == StatusCode::MovedPermanently || code == StatusCode::Found) && request.method == Method::Post) ||
-        code == StatusCode::SeeOther) {
+        (code == StatusCode::SeeOther && request.method != Method::Head)) {
         request.method = Method::Get;
         request.body = None;
     }

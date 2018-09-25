@@ -3,19 +3,20 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 // https://www.khronos.org/registry/webgl/specs/latest/1.0/webgl.idl
-use canvas_traits::webgl::{WebGLCommand, WebGLError, WebGLMsgSender};
+use canvas_traits::webgl::{WebGLCommand, WebGLError};
 use canvas_traits::webgl::{WebGLResult, WebGLSLVersion, WebGLShaderId};
 use canvas_traits::webgl::{WebGLVersion, webgl_channel};
 use dom::bindings::cell::DomRefCell;
 use dom::bindings::codegen::Bindings::WebGLShaderBinding;
-use dom::bindings::reflector::reflect_dom_object;
+use dom::bindings::inheritance::Castable;
+use dom::bindings::reflector::{DomObject, reflect_dom_object};
 use dom::bindings::root::DomRoot;
 use dom::bindings::str::DOMString;
 use dom::webgl_extensions::WebGLExtensions;
 use dom::webgl_extensions::ext::extshadertexturelod::EXTShaderTextureLod;
 use dom::webgl_extensions::ext::oesstandardderivatives::OESStandardDerivatives;
 use dom::webglobject::WebGLObject;
-use dom::window::Window;
+use dom::webglrenderingcontext::WebGLRenderingContext;
 use dom_struct::dom_struct;
 use mozangle::shaders::{BuiltInResources, Output, ShaderValidator};
 use offscreen_gl_context::GLLimits;
@@ -37,56 +38,49 @@ pub struct WebGLShader {
     gl_type: u32,
     source: DomRefCell<DOMString>,
     info_log: DomRefCell<DOMString>,
-    is_deleted: Cell<bool>,
+    marked_for_deletion: Cell<bool>,
     attached_counter: Cell<u32>,
     compilation_status: Cell<ShaderCompilationStatus>,
-    #[ignore_malloc_size_of = "Defined in ipc-channel"]
-    renderer: WebGLMsgSender,
 }
 
 static GLSLANG_INITIALIZATION: Once = ONCE_INIT;
 
 impl WebGLShader {
-    fn new_inherited(renderer: WebGLMsgSender,
-                     id: WebGLShaderId,
-                     shader_type: u32)
-                     -> WebGLShader {
+    fn new_inherited(context: &WebGLRenderingContext, id: WebGLShaderId, shader_type: u32) -> Self {
         GLSLANG_INITIALIZATION.call_once(|| ::mozangle::shaders::initialize().unwrap());
-        WebGLShader {
-            webgl_object: WebGLObject::new_inherited(),
+        Self {
+            webgl_object: WebGLObject::new_inherited(context),
             id: id,
             gl_type: shader_type,
             source: Default::default(),
             info_log: Default::default(),
-            is_deleted: Cell::new(false),
+            marked_for_deletion: Cell::new(false),
             attached_counter: Cell::new(0),
             compilation_status: Cell::new(ShaderCompilationStatus::NotCompiled),
-            renderer: renderer,
         }
     }
 
-    pub fn maybe_new(window: &Window,
-                     renderer: WebGLMsgSender,
-                     shader_type: u32)
-                     -> Option<DomRoot<WebGLShader>> {
+    pub fn maybe_new(context: &WebGLRenderingContext, shader_type: u32) -> Option<DomRoot<Self>> {
         let (sender, receiver) = webgl_channel().unwrap();
-        renderer.send(WebGLCommand::CreateShader(shader_type, sender)).unwrap();
-
-        let result = receiver.recv().unwrap();
-        result.map(|shader_id| WebGLShader::new(window, renderer, shader_id, shader_type))
+        context.send_command(WebGLCommand::CreateShader(shader_type, sender));
+        receiver
+            .recv()
+            .unwrap()
+            .map(|id| WebGLShader::new(context, id, shader_type))
     }
 
-    pub fn new(window: &Window,
-               renderer: WebGLMsgSender,
-               id: WebGLShaderId,
-               shader_type: u32)
-               -> DomRoot<WebGLShader> {
-        reflect_dom_object(Box::new(WebGLShader::new_inherited(renderer, id, shader_type)),
-                           window,
-                           WebGLShaderBinding::Wrap)
+    pub fn new(
+        context: &WebGLRenderingContext,
+        id: WebGLShaderId,
+        shader_type: u32,
+    ) -> DomRoot<Self> {
+        reflect_dom_object(
+            Box::new(WebGLShader::new_inherited(context, id, shader_type)),
+            &*context.global(),
+            WebGLShaderBinding::Wrap,
+        )
     }
 }
-
 
 impl WebGLShader {
     pub fn id(&self) -> WebGLShaderId {
@@ -105,7 +99,7 @@ impl WebGLShader {
         limits: &GLLimits,
         ext: &WebGLExtensions,
     ) -> WebGLResult<()> {
-        if self.is_deleted.get() && !self.is_attached() {
+        if self.marked_for_deletion.get() && !self.is_attached() {
             return Err(WebGLError::InvalidValue);
         }
         if self.compilation_status.get() != ShaderCompilationStatus::NotCompiled {
@@ -134,9 +128,7 @@ impl WebGLShader {
                 } else {
                     Output::Glsl
                 };
-                ShaderValidator::for_webgl(self.gl_type,
-                                            output_format,
-                                            &params).unwrap()
+                ShaderValidator::for_webgl(self.gl_type, output_format, &params).unwrap()
             },
             WebGLVersion::WebGL2 => {
                 let output_format = if cfg!(any(target_os = "android", target_os = "ios")) {
@@ -153,12 +145,10 @@ impl WebGLShader {
                         (4, 30) => Output::Glsl430Core,
                         (4, 40) => Output::Glsl440Core,
                         (4, _) => Output::Glsl450Core,
-                        _ => Output::Glsl140
+                        _ => Output::Glsl140,
                     }
                 };
-                ShaderValidator::for_webgl2(self.gl_type,
-                                            output_format,
-                                            &params).unwrap()
+                ShaderValidator::for_webgl2(self.gl_type, output_format, &params).unwrap()
             },
         };
 
@@ -168,9 +158,11 @@ impl WebGLShader {
                 // NOTE: At this point we should be pretty sure that the compilation in the paint thread
                 // will succeed.
                 // It could be interesting to retrieve the info log from the paint thread though
-                let msg = WebGLCommand::CompileShader(self.id, translated_source);
-                self.renderer.send(msg).unwrap();
-                self.compilation_status.set(ShaderCompilationStatus::Succeeded);
+                self.upcast::<WebGLObject>()
+                    .context()
+                    .send_command(WebGLCommand::CompileShader(self.id, translated_source));
+                self.compilation_status
+                    .set(ShaderCompilationStatus::Succeeded);
             },
             Err(error) => {
                 self.compilation_status.set(ShaderCompilationStatus::Failed);
@@ -180,26 +172,27 @@ impl WebGLShader {
 
         *self.info_log.borrow_mut() = validator.info_log().into();
 
-        // TODO(emilio): More data (like uniform data) should be collected
-        // here to properly validate uniforms.
-        //
-        // This requires a more complex interface with ANGLE, using C++
-        // bindings and being extremely cautious about destructing things.
         Ok(())
     }
 
     /// Mark this shader as deleted (if it wasn't previously)
     /// and delete it as if calling glDeleteShader.
     /// Currently does not check if shader is attached
-    pub fn delete(&self) {
-        if !self.is_deleted.get() {
-            self.is_deleted.set(true);
-            let _ = self.renderer.send(WebGLCommand::DeleteShader(self.id));
+    pub fn mark_for_deletion(&self) {
+        if !self.marked_for_deletion.get() {
+            self.marked_for_deletion.set(true);
+            self.upcast::<WebGLObject>()
+                .context()
+                .send_command(WebGLCommand::DeleteShader(self.id));
         }
     }
 
+    pub fn is_marked_for_deletion(&self) -> bool {
+        self.marked_for_deletion.get()
+    }
+
     pub fn is_deleted(&self) -> bool {
-        self.is_deleted.get()
+        self.marked_for_deletion.get() && !self.is_attached()
     }
 
     pub fn is_attached(&self) -> bool {
@@ -237,7 +230,6 @@ impl WebGLShader {
 
 impl Drop for WebGLShader {
     fn drop(&mut self) {
-        assert_eq!(self.attached_counter.get(), 0);
-        self.delete();
+        self.mark_for_deletion();
     }
 }

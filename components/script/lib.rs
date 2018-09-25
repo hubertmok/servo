@@ -5,18 +5,17 @@
 #![cfg_attr(feature = "unstable", feature(core_intrinsics))]
 #![cfg_attr(feature = "unstable", feature(on_unimplemented))]
 #![feature(const_fn)]
-#![feature(mpsc_select)]
+#![feature(drain_filter)]
 #![feature(plugin)]
-#![feature(string_retain)]
-#![feature(use_extern_macros)]
-
+#![feature(try_from)]
 #![deny(unsafe_code)]
 #![allow(non_snake_case)]
-
 #![doc = "The script crate contains all matters DOM."]
-
 #![plugin(script_plugins)]
-#![cfg_attr(not(feature = "unrooted_must_root_lint"), allow(unknown_lints))]
+#![cfg_attr(
+    not(feature = "unrooted_must_root_lint"),
+    allow(unknown_lints)
+)]
 
 extern crate app_units;
 extern crate audio_video_metadata;
@@ -29,20 +28,24 @@ extern crate canvas_traits;
 extern crate caseless;
 extern crate chrono;
 extern crate cookie as cookie_rs;
-#[macro_use] extern crate cssparser;
-#[macro_use] extern crate deny_public_fields;
+#[macro_use]
+extern crate cssparser;
+#[macro_use]
+extern crate deny_public_fields;
 extern crate devtools_traits;
 extern crate dom_struct;
 #[macro_use]
 extern crate domobject_derive;
 extern crate embedder_traits;
 extern crate encoding_rs;
-#[macro_use] extern crate enum_iterator;
+#[macro_use]
+extern crate enum_iterator;
 extern crate euclid;
 extern crate fnv;
 extern crate gleam;
 extern crate half;
-#[macro_use] extern crate html5ever;
+#[macro_use]
+extern crate html5ever;
 #[macro_use]
 extern crate hyper;
 extern crate hyper_serde;
@@ -55,8 +58,10 @@ extern crate lazy_static;
 extern crate libc;
 #[macro_use]
 extern crate log;
-#[macro_use] extern crate malloc_size_of;
-#[macro_use] extern crate malloc_size_of_derive;
+#[macro_use]
+extern crate malloc_size_of;
+#[macro_use]
+extern crate malloc_size_of_derive;
 extern crate metrics;
 #[macro_use]
 extern crate mime;
@@ -83,9 +88,13 @@ extern crate serde;
 extern crate serde_bytes;
 extern crate servo_allocator;
 extern crate servo_arc;
-#[macro_use] extern crate servo_atoms;
+#[macro_use]
+extern crate servo_atoms;
+#[macro_use]
+extern crate servo_channel;
 extern crate servo_config;
 extern crate servo_geometry;
+extern crate servo_media;
 extern crate servo_rand;
 extern crate servo_url;
 extern crate smallvec;
@@ -123,6 +132,7 @@ pub mod script_thread;
 mod serviceworker_manager;
 mod serviceworkerjob;
 mod stylesheet_loader;
+mod task_queue;
 mod task_source;
 pub mod test;
 pub mod textinput;
@@ -148,10 +158,7 @@ pub mod layout_exports {
 }
 
 use dom::bindings::codegen::RegisterBindings;
-use dom::bindings::conversions::is_dom_proxy;
 use dom::bindings::proxyhandler;
-use dom::bindings::utils::is_platform_object;
-use js::jsapi::JSObject;
 use script_traits::SWManagerSenders;
 use serviceworker_manager::ServiceWorkerManager;
 
@@ -181,7 +188,7 @@ fn perform_platform_specific_initialization() {
                         } else {
                             MAX_FILE_LIMIT
                         }
-                    }
+                    },
                 };
                 match libc::setrlimit(libc::RLIMIT_NOFILE, &rlim) {
                     0 => (),
@@ -202,11 +209,6 @@ pub fn init_service_workers(sw_senders: SWManagerSenders) {
 }
 
 #[allow(unsafe_code)]
-unsafe extern "C" fn is_dom_object(obj: *mut JSObject) -> bool {
-  !obj.is_null() && (is_platform_object(obj) || is_dom_proxy(obj))
-}
-
-#[allow(unsafe_code)]
 pub fn init() {
     unsafe {
         proxyhandler::init();
@@ -214,8 +216,6 @@ pub fn init() {
         // Create the global vtables used by the (generated) DOM
         // bindings to implement JS proxies.
         RegisterBindings::RegisterProxyHandlers();
-
-        js::glue::InitializeMemoryReporter(Some(is_dom_object));
     }
 
     perform_platform_specific_initialization();

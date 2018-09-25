@@ -3,6 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use AnimationState;
+use AuxiliaryBrowsingContextLoadInfo;
 use DocumentState;
 use IFrameLoadInfo;
 use IFrameLoadInfoWithData;
@@ -16,7 +17,8 @@ use embedder_traits::EmbedderMsg;
 use euclid::{Size2D, TypedSize2D};
 use gfx_traits::Epoch;
 use ipc_channel::ipc::{IpcReceiver, IpcSender};
-use msg::constellation_msg::{BrowsingContextId, HistoryStateId, PipelineId, TraversalDirection};
+use msg::constellation_msg::{BrowsingContextId, PipelineId, TopLevelBrowsingContextId};
+use msg::constellation_msg::{HistoryStateId, TraversalDirection};
 use net_traits::CoreResourceMsg;
 use net_traits::request::RequestInit;
 use net_traits::storage_thread::StorageType;
@@ -90,7 +92,13 @@ pub enum ScriptMsg {
     InitiateNavigateRequest(RequestInit, /* cancellation_chan */ IpcReceiver<()>),
     /// Broadcast a storage event to every same-origin pipeline.
     /// The strings are key, old value and new value.
-    BroadcastStorageEvent(StorageType, ServoUrl, Option<String>, Option<String>, Option<String>),
+    BroadcastStorageEvent(
+        StorageType,
+        ServoUrl,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ),
     /// Indicates whether this pipeline is currently running animations.
     ChangeRunningAnimationsState(AnimationState),
     /// Requests that a new 2D canvas thread be created. (This is done in the constellation because
@@ -100,12 +108,23 @@ pub enum ScriptMsg {
     Focus,
     /// Requests that the constellation retrieve the current contents of the clipboard
     GetClipboardContents(IpcSender<String>),
-    /// Get the browsing context id for a given pipeline.
-    GetBrowsingContextId(PipelineId, IpcSender<Option<BrowsingContextId>>),
-    /// Get the parent info for a given pipeline.
-    GetParentInfo(PipelineId, IpcSender<Option<PipelineId>>),
+    /// Get the top-level browsing context info for a given browsing context.
+    GetTopForBrowsingContext(
+        BrowsingContextId,
+        IpcSender<Option<TopLevelBrowsingContextId>>,
+    ),
+    /// Get the browsing context id of the browsing context in which pipeline is
+    /// embedded and the parent pipeline id of that browsing context.
+    GetBrowsingContextInfo(
+        PipelineId,
+        IpcSender<Option<(BrowsingContextId, Option<PipelineId>)>>,
+    ),
     /// Get the nth child browsing context ID for a given browsing context, sorted in tree order.
-    GetChildBrowsingContextId(BrowsingContextId, usize, IpcSender<Option<BrowsingContextId>>),
+    GetChildBrowsingContextId(
+        BrowsingContextId,
+        usize,
+        IpcSender<Option<BrowsingContextId>>,
+    ),
     /// All pending loads are complete, and the `load` event for this pipeline
     /// has been dispatched.
     LoadComplete,
@@ -116,6 +135,8 @@ pub enum ScriptMsg {
     AbortLoadUrl,
     /// Post a message to the currently active window of a given browsing context.
     PostMessage(BrowsingContextId, Option<ImmutableOrigin>, Vec<u8>),
+    /// Inform the constellation that a fragment was navigated to and whether or not it was a replacement navigation.
+    NavigatedToFragment(ServoUrl, bool),
     /// HTMLIFrameElement Forward or Back traversal.
     TraverseHistory(TraversalDirection),
     /// Inform the constellation of a pushed history state.
@@ -135,6 +156,11 @@ pub enum ScriptMsg {
     ScriptLoadedURLInIFrame(IFrameLoadInfoWithData),
     /// A load of the initial `about:blank` has been completed in an IFrame.
     ScriptNewIFrame(IFrameLoadInfo, IpcSender<LayoutControlMsg>),
+    /// Script has opened a new auxiliary browsing context.
+    ScriptNewAuxiliary(
+        AuxiliaryBrowsingContextLoadInfo,
+        IpcSender<LayoutControlMsg>,
+    ),
     /// Requests that the constellation set the contents of the clipboard
     SetClipboardContents(String),
     /// Mark a new document as active
@@ -177,13 +203,14 @@ impl fmt::Debug for ScriptMsg {
             CreateCanvasPaintThread(..) => "CreateCanvasPaintThread",
             Focus => "Focus",
             GetClipboardContents(..) => "GetClipboardContents",
-            GetBrowsingContextId(..) => "GetBrowsingContextId",
-            GetParentInfo(..) => "GetParentInfo",
+            GetBrowsingContextInfo(..) => "GetBrowsingContextInfo",
+            GetTopForBrowsingContext(..) => "GetParentBrowsingContext",
             GetChildBrowsingContextId(..) => "GetChildBrowsingContextId",
             LoadComplete => "LoadComplete",
             LoadUrl(..) => "LoadUrl",
             AbortLoadUrl => "AbortLoadUrl",
             PostMessage(..) => "PostMessage",
+            NavigatedToFragment(..) => "NavigatedToFragment",
             TraverseHistory(..) => "TraverseHistory",
             PushHistoryState(..) => "PushHistoryState",
             ReplaceHistoryState(..) => "ReplaceHistoryState",
@@ -193,6 +220,7 @@ impl fmt::Debug for ScriptMsg {
             VisibilityChangeComplete(..) => "VisibilityChangeComplete",
             ScriptLoadedURLInIFrame(..) => "ScriptLoadedURLInIFrame",
             ScriptNewIFrame(..) => "ScriptNewIFrame",
+            ScriptNewAuxiliary(..) => "ScriptNewAuxiliary",
             SetClipboardContents(..) => "SetClipboardContents",
             ActivateDocument => "ActivateDocument",
             SetDocumentState(..) => "SetDocumentState",

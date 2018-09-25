@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib
 
 from mach.decorators import (
     CommandArgument,
@@ -42,7 +43,8 @@ from servo.util import delete
 
 PACKAGES = {
     'android': [
-        'target/armv7-linux-androideabi/release/servo.apk',
+        'target/armv7-linux-androideabi/release/servoapp.apk',
+        'target/armv7-linux-androideabi/release/servoview.aar',
     ],
     'linux': [
         'target/release/servo-tech-demo.tar.gz',
@@ -54,7 +56,7 @@ PACKAGES = {
         'target/release/brew/servo.tar.gz',
     ],
     'windows-msvc': [
-        r'target\release\msi\Servo.msi',
+        r'target\release\msi\Servo.exe',
         r'target\release\msi\Servo.zip',
     ],
 }
@@ -144,6 +146,20 @@ def copy_windows_dependencies(binary_path, destination):
     for d in deps:
         shutil.copy(path.join(binary_path, d), destination)
 
+    # Search for the generated nspr4.dll
+    build_path = path.join(binary_path, "build")
+    nspr4 = "nspr4.dll"
+    nspr4_path = None
+    for root, dirs, files in os.walk(build_path):
+        if nspr4 in files:
+            nspr4_path = path.join(root, nspr4)
+            break
+
+    if nspr4_path is None:
+        print("WARNING: could not find nspr4.dll")
+    else:
+        shutil.copy(nspr4_path, destination)
+
 
 def change_prefs(resources_path, platform):
     print("Swapping prefs")
@@ -183,7 +199,6 @@ class PackageCommands(CommandBase):
                      default=None,
                      help='Package using the given Gradle flavor')
     def package(self, release=False, dev=False, android=None, debug=False, debugger=None, target=None, flavor=None):
-        env = self.build_env()
         if android is None:
             android = self.config["build"]["android"]
         if target and android:
@@ -191,6 +206,9 @@ class PackageCommands(CommandBase):
             sys.exit(1)
         if not android:
             android = self.handle_android_target(target)
+        else:
+            target = self.config["android"]["target"]
+        env = self.build_env(target=target)
         binary_path = self.get_binary_path(release, dev, android=android)
         dir_to_root = self.get_top_dir()
         target_dir = path.dirname(binary_path)
@@ -214,10 +232,12 @@ class PackageCommands(CommandBase):
             if flavor is not None:
                 flavor_name = flavor.title()
 
-            task_name = "assemble" + flavor_name + build_type + build_mode
+            variant = ":assemble" + flavor_name + build_type + build_mode
+            apk_task_name = ":servoapp" + variant
+            aar_task_name = ":servoview" + variant
             try:
                 with cd(path.join("support", "android", "apk")):
-                    subprocess.check_call(["./gradlew", "--no-daemon", task_name], env=env)
+                    subprocess.check_call(["./gradlew", "--no-daemon", apk_task_name, aar_task_name], env=env)
             except subprocess.CalledProcessError as e:
                 print("Packaging Android exited with return value %d" % e.returncode)
                 return e.returncode
@@ -327,7 +347,7 @@ class PackageCommands(CommandBase):
             import mako.template
             template_path = path.join(dir_to_root, "support", "windows", "Servo.wxs.mako")
             template = mako.template.Template(open(template_path).read())
-            wxs_path = path.join(dir_to_msi, "Servo.wxs")
+            wxs_path = path.join(dir_to_msi, "Installer.wxs")
             open(wxs_path, "w").write(template.render(
                 exe_path=target_dir,
                 dir_to_temp=dir_to_temp_servo,
@@ -345,6 +365,34 @@ class PackageCommands(CommandBase):
                 wxsobj_path = "{}.wixobj".format(path.splitext(wxs_path)[0])
                 with cd(dir_to_msi):
                     subprocess.check_call(['light', wxsobj_path])
+            except subprocess.CalledProcessError as e:
+                print("WiX light exited with return value %d" % e.returncode)
+                return e.returncode
+            print("Packaged Servo into " + path.join(dir_to_msi, "Installer.msi"))
+
+            # Download GStreamer installer. Only once.
+            dir_to_gst_deps = path.join(dir_to_msi, 'Gstreamer.msi')
+            gstreamer_msi_path = path.join(target_dir, 'Gstreamer.msi')
+            if not os.path.exists(gstreamer_msi_path):
+                print('Fetching GStreamer installer. This may take a while...')
+                gstreamer_url = 'https://gstreamer.freedesktop.org/data/pkg/windows/1.14.2/gstreamer-1.0-x86-1.14.2.msi'
+                urllib.urlretrieve(gstreamer_url, gstreamer_msi_path)
+            shutil.copy(gstreamer_msi_path, dir_to_gst_deps)
+
+            # Generate bundle with GStreamer and Servo installers.
+            print("Creating bundle")
+            shutil.copy(path.join(dir_to_root, 'support', 'windows', 'Servo.wxs'), dir_to_msi)
+            bundle_wxs_path = path.join(dir_to_msi, 'Servo.wxs')
+            try:
+                with cd(dir_to_msi):
+                    subprocess.check_call(['candle', bundle_wxs_path, '-ext', 'WixBalExtension'])
+            except subprocess.CalledProcessError as e:
+                print("WiX candle exited with return value %d" % e.returncode)
+                return e.returncode
+            try:
+                wxsobj_path = "{}.wixobj".format(path.splitext(bundle_wxs_path)[0])
+                with cd(dir_to_msi):
+                    subprocess.check_call(['light', wxsobj_path, '-ext', 'WixBalExtension'])
             except subprocess.CalledProcessError as e:
                 print("WiX light exited with return value %d" % e.returncode)
                 return e.returncode
@@ -421,7 +469,7 @@ class PackageCommands(CommandBase):
                 return 1
 
         if android:
-            pkg_path = binary_path + ".apk"
+            pkg_path = self.get_apk_path(release)
             exec_command = [self.android_adb_path(env)]
             if emulator and usb:
                 print("Cannot install to both emulator and USB at the same time.")

@@ -4,6 +4,7 @@
 
 use euclid::Size2D;
 use gleam::gl;
+use ipc_channel::ipc::{IpcBytesReceiver, IpcBytesSender};
 use offscreen_gl_context::{GLContextAttributes, GLLimits};
 use serde_bytes::ByteBuf;
 use std::borrow::Cow;
@@ -24,7 +25,7 @@ pub use ::webgl_channel::WebGLPipeline;
 pub use ::webgl_channel::WebGLChan;
 
 /// WebGL Message API
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Deserialize, Serialize)]
 pub enum WebGLMsg {
     /// Creates a new WebGLContext.
     CreateContext(WebGLVersion, Size2D<i32>, GLContextAttributes,
@@ -66,7 +67,7 @@ pub struct WebGLCreateContextResult {
     /// How the WebGLContext is shared with WebRender.
     pub share_mode: WebGLContextShareMode,
     /// The GLSL version supported by the context.
-    pub glsl_version: WebGLSLVersion
+    pub glsl_version: WebGLSLVersion,
 }
 
 #[derive(Clone, Copy, Deserialize, MallocSizeOf, Serialize)]
@@ -155,7 +156,7 @@ impl WebGLMsgSender {
 }
 
 /// WebGL Commands for a specific WebGLContext
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub enum WebGLCommand {
     GetContextAttributes(WebGLSender<GLContextAttributes>),
     ActiveTexture(u32),
@@ -167,8 +168,8 @@ pub enum WebGLCommand {
     AttachShader(WebGLProgramId, WebGLShaderId),
     DetachShader(WebGLProgramId, WebGLShaderId),
     BindAttribLocation(WebGLProgramId, u32, String),
-    BufferData(u32, ByteBuf, u32),
-    BufferSubData(u32, isize, ByteBuf),
+    BufferData(u32, IpcBytesReceiver, u32),
+    BufferSubData(u32, isize, IpcBytesReceiver),
     Clear(u32),
     ClearColor(f32, f32, f32, f32),
     ClearDepth(f32),
@@ -201,8 +202,6 @@ pub enum WebGLCommand {
     BindRenderbuffer(u32, Option<WebGLRenderbufferId>),
     BindTexture(u32, Option<WebGLTextureId>),
     DisableVertexAttribArray(u32),
-    DrawArrays(u32, i32, i32),
-    DrawElements(u32, i32, u32, i64),
     EnableVertexAttribArray(u32),
     FramebufferRenderbuffer(u32, u32, u32, Option<WebGLRenderbufferId>),
     FramebufferTexture2D(u32, u32, u32, Option<WebGLTextureId>, i32),
@@ -215,7 +214,7 @@ pub enum WebGLCommand {
     GetRenderbufferParameter(u32, u32, WebGLSender<i32>),
     PolygonOffset(f32, f32),
     RenderbufferStorage(u32, u32, i32, i32),
-    ReadPixels(i32, i32, i32, i32, u32, u32, WebGLSender<ByteBuf>),
+    ReadPixels(i32, i32, i32, i32, u32, u32, IpcBytesSender),
     SampleCoverage(f32, bool),
     Scissor(i32, i32, i32, i32),
     StencilFunc(u32, i32, u32),
@@ -225,7 +224,6 @@ pub enum WebGLCommand {
     StencilOp(u32, u32, u32),
     StencilOpSeparate(u32, u32, u32, u32),
     Hint(u32, u32),
-    IsEnabled(u32, WebGLSender<bool>),
     LineWidth(f32),
     PixelStorei(u32, i32),
     LinkProgram(WebGLProgramId, WebGLSender<ProgramLinkInfo>),
@@ -254,8 +252,8 @@ pub enum WebGLCommand {
     VertexAttribPointer(u32, i32, u32, bool, i32, u32),
     VertexAttribPointer2f(u32, i32, bool, i32, u32),
     SetViewport(i32, i32, i32, i32),
-    TexImage2D(u32, i32, i32, i32, i32, u32, u32, ByteBuf),
-    TexSubImage2D(u32, i32, i32, i32, i32, i32, u32, u32, ByteBuf),
+    TexImage2D(u32, i32, i32, i32, i32, u32, u32, IpcBytesReceiver),
+    TexSubImage2D(u32, i32, i32, i32, i32, i32, u32, u32, IpcBytesReceiver),
     DrawingBufferWidth(WebGLSender<i32>),
     DrawingBufferHeight(WebGLSender<i32>),
     Finish(WebGLSender<()>),
@@ -274,14 +272,14 @@ pub enum WebGLCommand {
     GetParameterFloat4(ParameterFloat4, WebGLSender<[f32; 4]>),
     GetProgramValidateStatus(WebGLProgramId, WebGLSender<bool>),
     GetProgramActiveUniforms(WebGLProgramId, WebGLSender<i32>),
-    GetShaderParameterBool(WebGLShaderId, ShaderParameterBool, WebGLSender<bool>),
-    GetShaderParameterInt(WebGLShaderId, ShaderParameterInt, WebGLSender<i32>),
     GetCurrentVertexAttrib(u32, WebGLSender<[f32; 4]>),
     GetTexParameterFloat(u32, TexParameterFloat, WebGLSender<f32>),
     GetTexParameterInt(u32, TexParameterInt, WebGLSender<i32>),
-    TexParameteri(u32, TexParameterInt, i32),
-    TexParameterf(u32, TexParameterFloat, f32),
+    TexParameteri(u32, u32, i32),
+    TexParameterf(u32, u32, f32),
+    DrawArrays { mode: u32, first: i32, count: i32 },
     DrawArraysInstanced { mode: u32, first: i32, count: i32, primcount: i32 },
+    DrawElements { mode: u32, count: i32, type_: u32, offset: u32 },
     DrawElementsInstanced { mode: u32, count: i32, type_: u32, offset: u32, primcount: i32 },
     VertexAttribDivisor { index: u32, divisor: u32 },
     GetUniformBool(WebGLProgramId, i32, WebGLSender<bool>),
@@ -298,6 +296,7 @@ pub enum WebGLCommand {
     GetUniformFloat4(WebGLProgramId, i32, WebGLSender<[f32; 4]>),
     GetUniformFloat9(WebGLProgramId, i32, WebGLSender<[f32; 9]>),
     GetUniformFloat16(WebGLProgramId, i32, WebGLSender<[f32; 16]>),
+    InitializeFramebuffer { color: bool, depth: bool, stencil: bool },
 }
 
 macro_rules! define_resource_id_struct {
@@ -511,15 +510,8 @@ macro_rules! parameters {
 parameters! {
     Parameter {
         Bool(ParameterBool {
-            Blend = gl::BLEND,
-            CullFace = gl::CULL_FACE,
-            DepthTest = gl::DEPTH_TEST,
             DepthWritemask = gl::DEPTH_WRITEMASK,
-            Dither = gl::DITHER,
-            PolygonOffsetFill = gl::POLYGON_OFFSET_FILL,
             SampleCoverageInvert = gl::SAMPLE_COVERAGE_INVERT,
-            ScissorTest = gl::SCISSOR_TEST,
-            StencilTest = gl::STENCIL_TEST,
         }),
         Bool4(ParameterBool4 {
             ColorWritemask = gl::COLOR_WRITEMASK,
@@ -541,7 +533,6 @@ parameters! {
             FrontFace = gl::FRONT_FACE,
             GenerateMipmapHint = gl::GENERATE_MIPMAP_HINT,
             GreenBits = gl::GREEN_BITS,
-            PackAlignment = gl::PACK_ALIGNMENT,
             RedBits = gl::RED_BITS,
             SampleBuffers = gl::SAMPLE_BUFFERS,
             Samples = gl::SAMPLES,
@@ -562,7 +553,6 @@ parameters! {
             StencilValueMask = gl::STENCIL_VALUE_MASK,
             StencilWritemask = gl::STENCIL_WRITEMASK,
             SubpixelBits = gl::SUBPIXEL_BITS,
-            UnpackAlignment = gl::UNPACK_ALIGNMENT,
         }),
         Int2(ParameterInt2 {
             MaxViewportDims = gl::MAX_VIEWPORT_DIMS,
@@ -592,25 +582,11 @@ parameters! {
 }
 
 parameters! {
-    ShaderParameter {
-        Bool(ShaderParameterBool {
-            DeleteStatus = gl::DELETE_STATUS,
-            CompileStatus = gl::COMPILE_STATUS,
-        }),
-        Int(ShaderParameterInt {
-            ShaderType = gl::SHADER_TYPE,
-        }),
-    }
-}
-
-parameters! {
     TexParameter {
         Float(TexParameterFloat {
             TextureMaxAnisotropyExt = gl::TEXTURE_MAX_ANISOTROPY_EXT,
         }),
         Int(TexParameterInt {
-            TextureMagFilter = gl::TEXTURE_MAG_FILTER,
-            TextureMinFilter = gl::TEXTURE_MIN_FILTER,
             TextureWrapS = gl::TEXTURE_WRAP_S,
             TextureWrapT = gl::TEXTURE_WRAP_T,
         }),

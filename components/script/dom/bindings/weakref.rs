@@ -11,11 +11,14 @@
 //! slot. When all associated `WeakRef` values are dropped, the
 //! `WeakBox` itself is dropped too.
 
+use dom::bindings::cell::DomRefCell;
 use dom::bindings::reflector::DomObject;
 use dom::bindings::root::DomRoot;
 use dom::bindings::trace::JSTraceable;
-use js::jsapi::{JSTracer, JS_GetReservedSlot, JS_SetReservedSlot};
+use js::glue::JS_GetReservedSlot;
+use js::jsapi::{JSTracer, JS_SetReservedSlot};
 use js::jsval::PrivateValue;
+use js::jsval::UndefinedValue;
 use libc::c_void;
 use malloc_size_of::{MallocSizeOf, MallocSizeOfOps};
 use std::cell::{Cell, UnsafeCell};
@@ -52,23 +55,26 @@ pub trait WeakReferenceable: DomObject + Sized {
     fn downgrade(&self) -> WeakRef<Self> {
         unsafe {
             let object = self.reflector().get_jsobject().get();
-            let mut ptr = JS_GetReservedSlot(object,
-                                             DOM_WEAK_SLOT)
-                              .to_private() as *mut WeakBox<Self>;
+            let mut slot = UndefinedValue();
+            JS_GetReservedSlot(object, DOM_WEAK_SLOT, &mut slot);
+            let mut ptr = slot.to_private() as *mut WeakBox<Self>;
             if ptr.is_null() {
                 trace!("Creating new WeakBox holder for {:p}.", self);
                 ptr = Box::into_raw(Box::new(WeakBox {
                     count: Cell::new(1),
                     value: Cell::new(Some(ptr::NonNull::from(self))),
                 }));
-                JS_SetReservedSlot(object, DOM_WEAK_SLOT, PrivateValue(ptr as *const c_void));
+                let val = PrivateValue(ptr as *const c_void);
+                JS_SetReservedSlot(object, DOM_WEAK_SLOT, &val);
             }
             let box_ = &*ptr;
             assert!(box_.value.get().is_some());
             let new_count = box_.count.get() + 1;
-            trace!("Incrementing WeakBox refcount for {:p} to {}.",
-                   self,
-                   new_count);
+            trace!(
+                "Incrementing WeakBox refcount for {:p} to {}.",
+                self,
+                new_count
+            );
             box_.count.set(new_count);
             WeakRef {
                 ptr: ptr::NonNull::new_unchecked(ptr),
@@ -87,9 +93,10 @@ impl<T: WeakReferenceable> WeakRef<T> {
 
     /// DomRoot a weak reference. Returns `None` if the object was already collected.
     pub fn root(&self) -> Option<DomRoot<T>> {
-        unsafe { &*self.ptr.as_ptr() }.value.get().map(|ptr| unsafe {
-            DomRoot::from_ref(&*ptr.as_ptr())
-        })
+        unsafe { &*self.ptr.as_ptr() }
+            .value
+            .get()
+            .map(|ptr| unsafe { DomRoot::from_ref(&*ptr.as_ptr()) })
     }
 
     /// Return whether the weakly-referenced object is still alive.
@@ -104,9 +111,7 @@ impl<T: WeakReferenceable> Clone for WeakRef<T> {
             let box_ = &*self.ptr.as_ptr();
             let new_count = box_.count.get() + 1;
             box_.count.set(new_count);
-            WeakRef {
-                ptr: self.ptr,
-            }
+            WeakRef { ptr: self.ptr }
         }
     }
 }
@@ -118,10 +123,10 @@ impl<T: WeakReferenceable> MallocSizeOf for WeakRef<T> {
 }
 
 impl<T: WeakReferenceable> PartialEq for WeakRef<T> {
-   fn eq(&self, other: &Self) -> bool {
+    fn eq(&self, other: &Self) -> bool {
         unsafe {
             (*self.ptr.as_ptr()).value.get().map(ptr::NonNull::as_ptr) ==
-            (*other.ptr.as_ptr()).value.get().map(ptr::NonNull::as_ptr)
+                (*other.ptr.as_ptr()).value.get().map(ptr::NonNull::as_ptr)
         }
     }
 }
@@ -186,7 +191,9 @@ impl<T: WeakReferenceable> MutableWeakRef<T> {
     /// DomRoot a mutable weak reference. Returns `None` if the object
     /// was already collected.
     pub fn root(&self) -> Option<DomRoot<T>> {
-        unsafe { &*self.cell.get() }.as_ref().and_then(WeakRef::root)
+        unsafe { &*self.cell.get() }
+            .as_ref()
+            .and_then(WeakRef::root)
     }
 }
 
@@ -229,7 +236,10 @@ impl<T: WeakReferenceable> WeakRefVec<T> {
         let mut i = 0;
         while i < self.vec.len() {
             if self.vec[i].is_alive() {
-                f(WeakRefEntry { vec: self, index: &mut i });
+                f(WeakRefEntry {
+                    vec: self,
+                    index: &mut i,
+                });
             } else {
                 self.vec.swap_remove(i);
             }
@@ -284,5 +294,36 @@ impl<'a, T: WeakReferenceable + 'a> Deref for WeakRefEntry<'a, T> {
 impl<'a, T: WeakReferenceable + 'a> Drop for WeakRefEntry<'a, T> {
     fn drop(&mut self) {
         *self.index += 1;
+    }
+}
+
+#[derive(MallocSizeOf)]
+pub struct DOMTracker<T: WeakReferenceable> {
+    dom_objects: DomRefCell<WeakRefVec<T>>,
+}
+
+impl<T: WeakReferenceable> DOMTracker<T> {
+    pub fn new() -> Self {
+        Self {
+            dom_objects: DomRefCell::new(WeakRefVec::new()),
+        }
+    }
+
+    pub fn track(&self, dom_object: &T) {
+        self.dom_objects.borrow_mut().push(WeakRef::new(dom_object));
+    }
+
+    pub fn for_each<F: FnMut(DomRoot<T>)>(&self, mut f: F) {
+        self.dom_objects.borrow_mut().update(|weak_ref| {
+            let root = weak_ref.root().unwrap();
+            f(root);
+        });
+    }
+}
+
+#[allow(unsafe_code)]
+unsafe impl<T: WeakReferenceable> JSTraceable for DOMTracker<T> {
+    unsafe fn trace(&self, _: *mut JSTracer) {
+        self.dom_objects.borrow_mut().retain_alive();
     }
 }

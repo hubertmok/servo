@@ -4,7 +4,7 @@
 
 use rustc::hir::def_id::DefId;
 use rustc::lint::LateContext;
-use syntax::codemap::{ExpnFormat, Span};
+use syntax::source_map::{ExpnFormat, Span};
 
 /// check if a DefId's path matches the given absolute type path
 /// usage e.g. with
@@ -22,10 +22,11 @@ pub fn match_def_path(cx: &LateContext, def_id: DefId, path: &[&str]) -> bool {
         return false;
     }
 
-    other.into_iter()
-         .map(|e| e.data)
-         .zip(path)
-         .all(|(nm, p)| &*nm.as_interned_str().as_str() == *p)
+    other
+        .into_iter()
+        .map(|e| e.data)
+        .zip(path)
+        .all(|(nm, p)| &*nm.as_interned_str().as_str() == *p)
 }
 
 pub fn in_derive_expn(span: Span) -> bool {

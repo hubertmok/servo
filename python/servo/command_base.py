@@ -24,6 +24,7 @@ import tarfile
 from xml.etree.ElementTree import XML
 from servo.util import download_file
 import urllib2
+from bootstrap import check_gstreamer_lib
 
 from mach.registrar import Registrar
 import toml
@@ -191,6 +192,16 @@ def is_linux():
     return sys.platform.startswith('linux')
 
 
+def append_to_path_env(string, env, name):
+    variable = ""
+    if name in env:
+        variable = env[name]
+        if len(variable) > 0:
+            variable += ":"
+    variable += string
+    env[name] = variable
+
+
 def set_osmesa_env(bin_path, env):
     """Set proper LD_LIBRARY_PATH and DRIVE for software rendering on Linux and OSX"""
     if is_linux():
@@ -198,7 +209,7 @@ def set_osmesa_env(bin_path, env):
         if not dep_path:
             return None
         osmesa_path = path.join(dep_path, "out", "lib", "gallium")
-        env["LD_LIBRARY_PATH"] = osmesa_path
+        append_to_path_env(osmesa_path, env, "LD_LIBRARY_PATH")
         env["GALLIUM_DRIVER"] = "softpipe"
     elif is_macosx():
         osmesa_dep_path = find_dep_path_newest('osmesa-src', bin_path)
@@ -208,7 +219,7 @@ def set_osmesa_env(bin_path, env):
                                 "out", "src", "gallium", "targets", "osmesa", ".libs")
         glapi_path = path.join(osmesa_dep_path,
                                "out", "src", "mapi", "shared-glapi", ".libs")
-        env["DYLD_LIBRARY_PATH"] = osmesa_path + ":" + glapi_path
+        append_to_path_env(osmesa_path + ":" + glapi_path, env, "DYLD_LIBRARY_PATH")
         env["GALLIUM_DRIVER"] = "softpipe"
     return env
 
@@ -330,15 +341,27 @@ class CommandBase(object):
         else:
             return path.join(self.context.topdir, "target")
 
+    def get_apk_path(self, release):
+        base_path = self.get_target_dir()
+        base_path = path.join(base_path, self.config["android"]["target"])
+        apk_name = "servoapp.apk"
+        build_type = "release" if release else "debug"
+        return path.join(base_path, build_type, apk_name)
+
+    def get_gstreamer_path(self):
+        return path.join(self.context.topdir, "support", "linux", "gstreamer", "gstreamer")
+
     def get_binary_path(self, release, dev, android=False):
         # TODO(autrilla): this function could still use work - it shouldn't
         # handle quitting, or printing. It should return the path, or an error.
         base_path = self.get_target_dir()
 
+        binary_name = "servo" + BIN_SUFFIX
+
         if android:
             base_path = path.join(base_path, self.config["android"]["target"])
+            binary_name = "libsimpleservo.so"
 
-        binary_name = "servo" + BIN_SUFFIX
         release_path = path.join(base_path, "release", binary_name)
         dev_path = path.join(base_path, "debug", binary_name)
 
@@ -457,6 +480,37 @@ class CommandBase(object):
             bin_folder = path.join(destination_folder, "PFiles", "Mozilla research", "Servo Tech Demo")
         return path.join(bin_folder, "servo{}".format(BIN_SUFFIX))
 
+    def needs_gstreamer_env(self, target):
+        try:
+            if check_gstreamer_lib():
+                return False
+        except:
+            # Some systems don't have pkg-config; we can't probe in this case
+            # and must hope for the best
+            return False
+        effective_target = target or host_triple()
+        if "x86_64" not in effective_target or "android" in effective_target:
+            # We don't build gstreamer for non-x86_64 / android yet
+            return False
+        if sys.platform == "linux2":
+            if path.isdir(self.get_gstreamer_path()):
+                return True
+            else:
+                raise Exception("Your system's gstreamer libraries are out of date \
+(we need at least 1.12). Please run ./mach bootstrap-gstreamer")
+        else:
+                raise Exception("Your system's gstreamer libraries are out of date \
+(we need at least 1.12). If you're unable to \
+install them, let us know by filing a bug!")
+        return False
+
+    def set_run_env(self, android=False):
+        """Some commands, like test-wpt, don't use a full build env,
+           but may still need dynamic search paths. This command sets that up"""
+        if not android and self.needs_gstreamer_env(None):
+            gstpath = self.get_gstreamer_path()
+            os.environ["LD_LIBRARY_PATH"] = path.join(gstpath, "lib", "x86_64-linux-gnu")
+
     def build_env(self, hosts_file_path=None, target=None, is_build=False, test_unit=False):
         """Return an extended environment dictionary."""
         env = os.environ.copy()
@@ -484,16 +538,35 @@ class CommandBase(object):
             env["OPENSSL_INCLUDE_DIR"] = path.join(package_dir("openssl"), "include")
             env["OPENSSL_LIB_DIR"] = path.join(package_dir("openssl"), "lib" + msvc_x64)
             env["OPENSSL_LIBS"] = "libsslMD:libcryptoMD"
-            # Link moztools
-            env["MOZTOOLS_PATH"] = path.join(package_dir("moztools"), "bin")
+            # Link moztools, used for building SpiderMonkey
+            env["MOZTOOLS_PATH"] = os.pathsep.join([
+                path.join(package_dir("moztools"), "bin"),
+                path.join(package_dir("moztools"), "msys", "bin"),
+            ])
+            # Link autoconf 2.13, used for building SpiderMonkey
+            env["AUTOCONF"] = path.join(package_dir("moztools"), "msys", "local", "bin", "autoconf-2.13")
             # Link LLVM
             env["LIBCLANG_PATH"] = path.join(package_dir("llvm"), "lib")
 
-        if is_windows():
             if not os.environ.get("NATIVE_WIN32_PYTHON"):
                 env["NATIVE_WIN32_PYTHON"] = sys.executable
             # Always build harfbuzz from source
             env["HARFBUZZ_SYS_NO_PKG_CONFIG"] = "true"
+
+        if self.needs_gstreamer_env(target):
+            gstpath = self.get_gstreamer_path()
+            extra_path += [path.join(gstpath, "bin")]
+            libpath = path.join(gstpath, "lib", "x86_64-linux-gnu")
+            # we append in the reverse order so that system gstreamer libraries
+            # do not get precedence
+            extra_path = [libpath] + extra_path
+            extra_lib = [libpath] + extra_path
+            append_to_path_env(path.join(libpath, "pkgconfig"), env, "PKG_CONFIG_PATH")
+
+        if sys.platform == "linux2":
+            distro, version, _ = platform.linux_distribution()
+            if distro == "Ubuntu" and (version == "16.04" or version == "14.04"):
+                env["HARFBUZZ_SYS_NO_PKG_CONFIG"] = "true"
 
         if extra_path:
             env["PATH"] = "%s%s%s" % (os.pathsep.join(extra_path), os.pathsep, env["PATH"])
@@ -594,10 +667,10 @@ class CommandBase(object):
 
         return env
 
-    def servo_crate(self):
+    def ports_servo_crate(self):
         return path.join(self.context.topdir, "ports", "servo")
 
-    def servo_manifest(self):
+    def ports_servo_manifest(self):
         return path.join(self.context.topdir, "ports", "servo", "Cargo.toml")
 
     def servo_features(self):
@@ -631,21 +704,13 @@ class CommandBase(object):
         return "emulator"
 
     def handle_android_target(self, target):
-        if target == "arm-linux-androideabi":
-            self.config["android"]["platform"] = "android-18"
-            self.config["android"]["target"] = target
-            self.config["android"]["toolchain_prefix"] = target
-            self.config["android"]["arch"] = "arm"
-            self.config["android"]["lib"] = "armeabi"
-            self.config["android"]["toolchain_name"] = target + "-4.9"
-            return True
-        elif target == "armv7-linux-androideabi":
+        if target == "armv7-linux-androideabi":
             self.config["android"]["platform"] = "android-18"
             self.config["android"]["target"] = target
             self.config["android"]["toolchain_prefix"] = "arm-linux-androideabi"
             self.config["android"]["arch"] = "arm"
             self.config["android"]["lib"] = "armeabi-v7a"
-            self.config["android"]["toolchain_name"] = "arm-linux-androideabi-4.9"
+            self.config["android"]["toolchain_name"] = "arm-linux-androideabi"
             return True
         elif target == "aarch64-linux-android":
             self.config["android"]["platform"] = "android-21"
@@ -653,15 +718,16 @@ class CommandBase(object):
             self.config["android"]["toolchain_prefix"] = target
             self.config["android"]["arch"] = "arm64"
             self.config["android"]["lib"] = "arm64-v8a"
-            self.config["android"]["toolchain_name"] = target + "-4.9"
+            self.config["android"]["toolchain_name"] = target
             return True
         elif target == "i686-linux-android":
-            self.config["android"]["platform"] = "android-18"
+            # https://github.com/jemalloc/jemalloc/issues/1279
+            self.config["android"]["platform"] = "android-21"
             self.config["android"]["target"] = target
             self.config["android"]["toolchain_prefix"] = "x86"
             self.config["android"]["arch"] = "x86"
             self.config["android"]["lib"] = "x86"
-            self.config["android"]["toolchain_name"] = "x86-4.9"
+            self.config["android"]["toolchain_name"] = target
             return True
         return False
 

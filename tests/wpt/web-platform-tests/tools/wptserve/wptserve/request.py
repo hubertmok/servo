@@ -278,6 +278,7 @@ class Request(object):
 
         self.raw_input = InputFile(request_handler.rfile,
                                    int(self.headers.get("Content-Length", 0)))
+
         self._body = None
 
         self._GET = None
@@ -345,6 +346,13 @@ class Request(object):
         if self._auth is None:
             self._auth = Authentication(self.headers)
         return self._auth
+
+
+class H2Request(Request):
+    def __init__(self, request_handler):
+        self.h2_stream_id = request_handler.h2_stream_id
+        self.frames = []
+        super(H2Request, self).__init__(request_handler)
 
 
 class RequestHeaders(dict):

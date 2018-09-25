@@ -3,19 +3,18 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 // https://www.khronos.org/registry/webgl/specs/latest/1.0/webgl.idl
-use canvas_traits::webgl::{WebGLBufferId, WebGLCommand, WebGLError, WebGLMsgSender, WebGLResult, WebGLVertexArrayId};
+use canvas_traits::webgl::{WebGLBufferId, WebGLCommand, WebGLError, WebGLResult};
 use canvas_traits::webgl::webgl_channel;
-use dom::bindings::cell::DomRefCell;
 use dom::bindings::codegen::Bindings::WebGLBufferBinding;
 use dom::bindings::codegen::Bindings::WebGLRenderingContextBinding::WebGLRenderingContextConstants;
-use dom::bindings::reflector::reflect_dom_object;
+use dom::bindings::inheritance::Castable;
+use dom::bindings::reflector::{DomObject, reflect_dom_object};
 use dom::bindings::root::DomRoot;
 use dom::webglobject::WebGLObject;
-use dom::window::Window;
+use dom::webglrenderingcontext::WebGLRenderingContext;
 use dom_struct::dom_struct;
+use ipc_channel::ipc;
 use std::cell::Cell;
-use std::collections::HashSet;
-
 
 #[dom_struct]
 pub struct WebGLBuffer {
@@ -24,79 +23,49 @@ pub struct WebGLBuffer {
     /// The target to which this buffer was bound the first time
     target: Cell<Option<u32>>,
     capacity: Cell<usize>,
-    is_deleted: Cell<bool>,
-    // The Vertex Array Objects that are referencing this buffer
-    vao_references: DomRefCell<Option<HashSet<WebGLVertexArrayId>>>,
-    pending_delete: Cell<bool>,
-    #[ignore_malloc_size_of = "Defined in ipc-channel"]
-    renderer: WebGLMsgSender,
+    marked_for_deletion: Cell<bool>,
+    attached_counter: Cell<u32>,
     /// https://www.khronos.org/registry/OpenGL-Refpages/es2.0/xhtml/glGetBufferParameteriv.xml
     usage: Cell<u32>,
 }
 
 impl WebGLBuffer {
-    fn new_inherited(renderer: WebGLMsgSender,
-                     id: WebGLBufferId)
-                     -> WebGLBuffer {
-        WebGLBuffer {
-            webgl_object: WebGLObject::new_inherited(),
-            id: id,
-            target: Cell::new(None),
-            capacity: Cell::new(0),
-            is_deleted: Cell::new(false),
-            vao_references: DomRefCell::new(None),
-            pending_delete: Cell::new(false),
-            renderer: renderer,
+    fn new_inherited(context: &WebGLRenderingContext, id: WebGLBufferId) -> Self {
+        Self {
+            webgl_object: WebGLObject::new_inherited(context),
+            id,
+            target: Default::default(),
+            capacity: Default::default(),
+            marked_for_deletion: Default::default(),
+            attached_counter: Default::default(),
             usage: Cell::new(WebGLRenderingContextConstants::STATIC_DRAW),
         }
     }
 
-    pub fn maybe_new(window: &Window, renderer: WebGLMsgSender)
-                     -> Option<DomRoot<WebGLBuffer>> {
+    pub fn maybe_new(context: &WebGLRenderingContext) -> Option<DomRoot<Self>> {
         let (sender, receiver) = webgl_channel().unwrap();
-        renderer.send(WebGLCommand::CreateBuffer(sender)).unwrap();
-
-        let result = receiver.recv().unwrap();
-        result.map(|buffer_id| WebGLBuffer::new(window, renderer, buffer_id))
+        context.send_command(WebGLCommand::CreateBuffer(sender));
+        receiver
+            .recv()
+            .unwrap()
+            .map(|id| WebGLBuffer::new(context, id))
     }
 
-    pub fn new(window: &Window,
-               renderer: WebGLMsgSender,
-               id: WebGLBufferId)
-              -> DomRoot<WebGLBuffer> {
-        reflect_dom_object(Box::new(WebGLBuffer::new_inherited(renderer, id)),
-                           window, WebGLBufferBinding::Wrap)
+    pub fn new(context: &WebGLRenderingContext, id: WebGLBufferId) -> DomRoot<Self> {
+        reflect_dom_object(
+            Box::new(WebGLBuffer::new_inherited(context, id)),
+            &*context.global(),
+            WebGLBufferBinding::Wrap,
+        )
     }
 }
-
 
 impl WebGLBuffer {
     pub fn id(&self) -> WebGLBufferId {
         self.id
     }
 
-    // NB: Only valid buffer targets come here
-    pub fn bind(&self, target: u32) -> WebGLResult<()> {
-        if self.is_deleted() || self.is_pending_delete() {
-            return Err(WebGLError::InvalidOperation);
-        }
-        if let Some(previous_target) = self.target.get() {
-            if target != previous_target {
-                return Err(WebGLError::InvalidOperation);
-            }
-        } else {
-            self.target.set(Some(target));
-        }
-        let msg = WebGLCommand::BindBuffer(target, Some(self.id));
-        self.renderer.send(msg).unwrap();
-
-        Ok(())
-    }
-
-    pub fn buffer_data<T>(&self, target: u32, data: T, usage: u32) -> WebGLResult<()>
-    where
-        T: Into<Vec<u8>>,
-    {
+    pub fn buffer_data(&self, data: &[u8], usage: u32) -> WebGLResult<()> {
         match usage {
             WebGLRenderingContextConstants::STREAM_DRAW |
             WebGLRenderingContextConstants::STATIC_DRAW |
@@ -104,16 +73,17 @@ impl WebGLBuffer {
             _ => return Err(WebGLError::InvalidEnum),
         }
 
-        if let Some(previous_target) = self.target.get() {
-            if target != previous_target {
-                return Err(WebGLError::InvalidOperation);
-            }
-        }
-        let data = data.into();
         self.capacity.set(data.len());
         self.usage.set(usage);
-        self.renderer.send(WebGLCommand::BufferData(target, data.into(), usage)).unwrap();
-
+        let (sender, receiver) = ipc::bytes_channel().unwrap();
+        self.upcast::<WebGLObject>()
+            .context()
+            .send_command(WebGLCommand::BufferData(
+                self.target.get().unwrap(),
+                receiver,
+                usage,
+            ));
+        sender.send(data).unwrap();
         Ok(())
     }
 
@@ -121,52 +91,65 @@ impl WebGLBuffer {
         self.capacity.get()
     }
 
-    pub fn delete(&self) {
-        if !self.is_deleted.get() {
-            self.is_deleted.set(true);
-            let _ = self.renderer.send(WebGLCommand::DeleteBuffer(self.id));
+    pub fn mark_for_deletion(&self) {
+        if self.marked_for_deletion.get() {
+            return;
+        }
+        self.marked_for_deletion.set(true);
+        if self.is_deleted() {
+            self.delete();
         }
     }
 
+    fn delete(&self) {
+        assert!(self.is_deleted());
+        self.upcast::<WebGLObject>()
+            .context()
+            .send_command(WebGLCommand::DeleteBuffer(self.id));
+    }
+
+    pub fn is_marked_for_deletion(&self) -> bool {
+        self.marked_for_deletion.get()
+    }
+
     pub fn is_deleted(&self) -> bool {
-        self.is_deleted.get()
+        self.marked_for_deletion.get() && !self.is_attached()
     }
 
     pub fn target(&self) -> Option<u32> {
         self.target.get()
     }
 
-    pub fn is_attached_to_vao(&self) -> bool {
-        self.vao_references.borrow().as_ref().map_or(false, |vaos| !vaos.is_empty())
-    }
-
-    pub fn set_pending_delete(&self) {
-        self.pending_delete.set(true);
-    }
-
-    pub fn is_pending_delete(&self) -> bool {
-        self.pending_delete.get()
-    }
-
-    pub fn add_vao_reference(&self, id: WebGLVertexArrayId) {
-        let mut vao_refs = self.vao_references.borrow_mut();
-        if let Some(ref mut vao_refs) = *vao_refs {
-            vao_refs.insert(id);
-            return;
+    pub fn set_target(&self, target: u32) -> WebGLResult<()> {
+        if self.target.get().map_or(false, |t| t != target) {
+            return Err(WebGLError::InvalidOperation);
         }
-
-        let mut map = HashSet::new();
-        map.insert(id);
-        *vao_refs = Some(map);
+        self.target.set(Some(target));
+        Ok(())
     }
 
-    pub fn remove_vao_reference(&self, id: WebGLVertexArrayId) {
-        if let Some(ref mut vao_refs) = *self.vao_references.borrow_mut() {
-            if vao_refs.take(&id).is_some() && self.pending_delete.get() {
-                // WebGL spec: The deleted buffers should no longer be valid when the VAOs are deleted
-                let _ = self.renderer.send(WebGLCommand::DeleteBuffer(self.id));
-                self.is_deleted.set(true);
-            }
+    pub fn is_attached(&self) -> bool {
+        self.attached_counter.get() != 0
+    }
+
+    pub fn increment_attached_counter(&self) {
+        self.attached_counter.set(
+            self.attached_counter
+                .get()
+                .checked_add(1)
+                .expect("refcount overflowed"),
+        );
+    }
+
+    pub fn decrement_attached_counter(&self) {
+        self.attached_counter.set(
+            self.attached_counter
+                .get()
+                .checked_sub(1)
+                .expect("refcount underflowed"),
+        );
+        if self.is_deleted() {
+            self.delete();
         }
     }
 
@@ -177,6 +160,7 @@ impl WebGLBuffer {
 
 impl Drop for WebGLBuffer {
     fn drop(&mut self) {
-        self.delete();
+        self.mark_for_deletion();
+        assert!(self.is_deleted());
     }
 }

@@ -67,7 +67,10 @@ def get_run_info(metadata_root, product, **kwargs):
 
 
 class RunInfo(dict):
-    def __init__(self, metadata_root, product, debug, browser_version=None, extras=None):
+    def __init__(self, metadata_root, product, debug,
+                 browser_version=None,
+                 browser_channel=None,
+                 extras=None):
         import mozinfo
         self._update_mozinfo(metadata_root)
         self.update(mozinfo.info)
@@ -89,6 +92,8 @@ class RunInfo(dict):
             self["debug"] = False
         if browser_version:
             self["browser_version"] = browser_version
+        if browser_channel:
+            self["browser_channel"] = browser_channel
         if extras is not None:
             self.update(extras)
 
@@ -213,6 +218,16 @@ class Test(object):
             if count is not None:
                 return count
         return 0
+
+    @property
+    def lsan_allowed(self):
+        lsan_allowed = set()
+        for meta in self.itermeta():
+            lsan_allowed |= meta.lsan_allowed
+            if atom_reset in lsan_allowed:
+                lsan_allowed.remove(atom_reset)
+                break
+        return lsan_allowed
 
     @property
     def tags(self):
@@ -411,7 +426,7 @@ class WdspecTest(Test):
     test_type = "wdspec"
 
     default_timeout = 25
-    long_timeout = 120
+    long_timeout = 180  # 3 minutes
 
 
 manifest_test_cls = {"reftest": ReftestTest,
