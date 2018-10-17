@@ -319,7 +319,7 @@ impl HTMLAnchorElementMethods for HTMLAnchorElement {
             },
             Some(ref url) => {
                 // Step 3.
-                url.origin().ascii_serialization()
+                url.origin().unicode_serialization()
             },
         })
     }

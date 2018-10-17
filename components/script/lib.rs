@@ -18,8 +18,7 @@
 )]
 
 extern crate app_units;
-#[cfg(any(feature = "webgl_backtrace", feature = "js_backtrace"))]
-extern crate backtrace;
+extern crate audio_video_metadata;
 extern crate base64;
 #[macro_use]
 extern crate bitflags;
@@ -77,7 +76,6 @@ extern crate num_traits;
 extern crate offscreen_gl_context;
 extern crate parking_lot;
 extern crate phf;
-extern crate pixels;
 #[macro_use]
 extern crate profile_traits;
 extern crate ref_filter_map;

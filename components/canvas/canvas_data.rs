@@ -11,9 +11,8 @@ use azure::azure_hl::SurfacePattern;
 use canvas_traits::canvas::*;
 use cssparser::RGBA;
 use euclid::{Transform2D, Point2D, Vector2D, Rect, Size2D};
-use ipc_channel::ipc::IpcSender;
+use ipc_channel::ipc::{IpcBytesSender, IpcSender};
 use num_traits::ToPrimitive;
-use pixels;
 use serde_bytes::ByteBuf;
 use std::mem;
 use std::sync::Arc;
@@ -36,7 +35,7 @@ pub struct CanvasData<'a> {
 
 impl<'a> CanvasData<'a> {
     pub fn new(
-        size: Size2D<u32>,
+        size: Size2D<i32>,
         webrender_api_sender: webrender_api::RenderApiSender,
         antialias: AntialiasMode,
         canvas_id: CanvasId
@@ -370,12 +369,11 @@ impl<'a> CanvasData<'a> {
         self.state.draw_options.set_composition_op(op.to_azure_style());
     }
 
-    pub fn create(size: Size2D<u32>) -> DrawTarget {
-        // FIXME(nox): Why is the size made of i32 values?
-        DrawTarget::new(BackendType::Skia, size.to_i32(), SurfaceFormat::B8G8R8A8)
+    pub fn create(size: Size2D<i32>) -> DrawTarget {
+        DrawTarget::new(BackendType::Skia, size, SurfaceFormat::B8G8R8A8)
     }
 
-    pub fn recreate(&mut self, size: Size2D<u32>) {
+    pub fn recreate(&mut self, size: Size2D<i32>) {
         self.drawtarget = CanvasData::create(size);
         self.state = CanvasPaintState::new(self.state.draw_options.antialias);
         self.saved_states.clear();
@@ -440,22 +438,104 @@ impl<'a> CanvasData<'a> {
         chan.send(data).unwrap();
     }
 
+    pub fn image_data(
+        &self,
+        dest_rect: Rect<i32>,
+        canvas_size: Size2D<f64>,
+        sender: IpcBytesSender,
+    ) {
+        sender.send(&self.read_pixels(dest_rect, canvas_size)).unwrap();
+    }
+
     // https://html.spec.whatwg.org/multipage/#dom-context-2d-putimagedata
-    pub fn put_image_data(&mut self, mut imagedata: Vec<u8>, rect: Rect<u32>) {
-        assert_eq!(imagedata.len() % 4, 0);
-        assert_eq!(rect.size.area() as usize, imagedata.len() / 4);
-        pixels::byte_swap_and_premultiply_inplace(&mut imagedata);
-        let source_surface = self.drawtarget.create_source_surface_from_data(
-            &imagedata,
-            rect.size.to_i32(),
-            rect.size.width as i32 * 4,
-            SurfaceFormat::B8G8R8A8,
-        ).unwrap();
-        self.drawtarget.copy_surface(
-            source_surface,
-            Rect::from_size(rect.size.to_i32()),
-            rect.origin.to_i32(),
-        );
+    pub fn put_image_data(
+        &mut self,
+        imagedata: Vec<u8>,
+        offset: Vector2D<f64>,
+        image_data_size: Size2D<f64>,
+        mut dirty_rect: Rect<f64>
+    ) {
+        if image_data_size.width <= 0.0 || image_data_size.height <= 0.0 {
+            return
+        }
+
+        assert_eq!(image_data_size.width * image_data_size.height * 4.0, imagedata.len() as f64);
+
+        // Step 1. TODO (neutered data)
+
+        // Step 2.
+        if dirty_rect.size.width < 0.0f64 {
+            dirty_rect.origin.x += dirty_rect.size.width;
+            dirty_rect.size.width = -dirty_rect.size.width;
+        }
+
+        if dirty_rect.size.height < 0.0f64 {
+            dirty_rect.origin.y += dirty_rect.size.height;
+            dirty_rect.size.height = -dirty_rect.size.height;
+        }
+
+        // Step 3.
+        if dirty_rect.origin.x < 0.0f64 {
+            dirty_rect.size.width += dirty_rect.origin.x;
+            dirty_rect.origin.x = 0.0f64;
+        }
+
+        if dirty_rect.origin.y < 0.0f64 {
+            dirty_rect.size.height += dirty_rect.origin.y;
+            dirty_rect.origin.y = 0.0f64;
+        }
+
+        // Step 4.
+        if dirty_rect.max_x() > image_data_size.width {
+            dirty_rect.size.width = image_data_size.width - dirty_rect.origin.x;
+        }
+
+        if dirty_rect.max_y() > image_data_size.height {
+            dirty_rect.size.height = image_data_size.height - dirty_rect.origin.y;
+        }
+
+        // 5) If either dirtyWidth or dirtyHeight is negative or zero,
+        // stop without affecting any bitmaps
+        if dirty_rect.size.width <= 0.0 || dirty_rect.size.height <= 0.0 {
+            return
+        }
+
+        // Step 6.
+        let dest_rect = dirty_rect.translate(&offset).to_i32();
+
+        // azure_hl operates with integers. We need to cast the image size
+        let image_size = image_data_size.to_i32();
+
+        let first_pixel = dest_rect.origin - offset.to_i32();
+        let mut src_line = (first_pixel.y * (image_size.width * 4) + first_pixel.x * 4) as usize;
+
+        let mut dest =
+            Vec::with_capacity((dest_rect.size.width * dest_rect.size.height * 4) as usize);
+
+        for _ in 0 .. dest_rect.size.height {
+            let mut src_offset = src_line;
+            for _ in 0 .. dest_rect.size.width {
+                let alpha = imagedata[src_offset + 3] as u16;
+                // add 127 before dividing for more accurate rounding
+                let premultiply_channel = |channel: u8| (((channel as u16 * alpha) + 127) / 255) as u8;
+                dest.push(premultiply_channel(imagedata[src_offset + 2]));
+                dest.push(premultiply_channel(imagedata[src_offset + 1]));
+                dest.push(premultiply_channel(imagedata[src_offset + 0]));
+                dest.push(imagedata[src_offset + 3]);
+                src_offset += 4;
+            }
+            src_line += (image_size.width * 4) as usize;
+        }
+
+        if let Some(source_surface) = self.drawtarget.create_source_surface_from_data(
+                &dest,
+                dest_rect.size,
+                dest_rect.size.width * 4,
+                SurfaceFormat::B8G8R8A8) {
+            self.drawtarget.copy_surface(source_surface,
+                                         Rect::new(Point2D::new(0, 0), dest_rect.size),
+                                         dest_rect.origin);
+        }
     }
 
     pub fn set_shadow_offset_x(&mut self, value: f64) {
@@ -513,13 +593,32 @@ impl<'a> CanvasData<'a> {
     /// canvas_size: The size of the canvas we're reading from
     /// read_rect: The area of the canvas we want to read from
     #[allow(unsafe_code)]
-    pub fn read_pixels(&self, read_rect: Rect<u32>, canvas_size: Size2D<u32>) -> Vec<u8> {
-        let canvas_rect = Rect::from_size(canvas_size);
-        if canvas_rect.intersection(&read_rect).map_or(true, |rect| rect.is_empty()) {
-            return vec![];
+    pub fn read_pixels(&self, read_rect: Rect<i32>, canvas_size: Size2D<f64>) -> Vec<u8> {
+        let canvas_size = canvas_size.to_i32();
+        let canvas_rect = Rect::new(Point2D::new(0i32, 0i32), canvas_size);
+        let src_read_rect = canvas_rect.intersection(&read_rect).unwrap_or(Rect::zero());
+
+        if src_read_rect.is_empty() || canvas_size.width <= 0 && canvas_size.height <= 0 {
+          return vec![];
         }
+
         let data_surface = self.drawtarget.snapshot().get_data_surface();
-        pixels::get_rect(unsafe { data_surface.data() }, canvas_size.to_u32(), read_rect.to_u32()).into_owned()
+        let src_data = unsafe { data_surface.data() };
+        let stride = data_surface.stride();
+
+        //start offset of the copyable rectangle
+        let mut src = (src_read_rect.origin.y * stride + src_read_rect.origin.x * 4) as usize;
+        let mut image_data = Vec::with_capacity(
+            (src_read_rect.size.width * src_read_rect.size.height * 4) as usize,
+        );
+        //copy the data to the destination vector
+        for _ in 0..src_read_rect.size.height {
+            let row = &src_data[src .. src + (4 * src_read_rect.size.width) as usize];
+            image_data.extend_from_slice(row);
+            src += stride as usize;
+        }
+
+        image_data
     }
 }
 
@@ -590,9 +689,6 @@ fn crop_image(
     // We're going to iterate over a pixel values array so we need integers
     let crop_rect = crop_rect.to_i32();
     let image_size = image_size.to_i32();
-    if crop_rect == Rect::from_size(image_size) {
-        return image_data;
-    }
     // Assuming 4 bytes per pixel and row-major order for storage
     // (consecutive elements in a pixel row of the image are contiguous in memory)
     let stride = image_size.width * 4;
@@ -642,23 +738,23 @@ fn write_image(
     } else {
         Filter::Point
     };
+    // azure_hl operates with integers. We need to cast the image size
     let image_size = image_size.to_i32();
 
-    let source_surface = draw_target.create_source_surface_from_data(
-        &image_data,
-        image_size,
-        image_size.width * 4,
-        SurfaceFormat::B8G8R8A8,
-    ).unwrap();
-    let draw_surface_options = DrawSurfaceOptions::new(filter, true);
-    let draw_options = DrawOptions::new(global_alpha, composition_op, AntialiasMode::None);
-    draw_target.draw_surface(
-        source_surface,
-        dest_rect.to_azure_style(),
-        image_rect.to_azure_style(),
-        draw_surface_options,
-        draw_options,
-    );
+    if let Some(source_surface) =
+            draw_target.create_source_surface_from_data(&image_data,
+                                                        image_size,
+                                                        image_size.width * 4,
+                                                        SurfaceFormat::B8G8R8A8) {
+        let draw_surface_options = DrawSurfaceOptions::new(filter, true);
+        let draw_options = DrawOptions::new(global_alpha, composition_op, AntialiasMode::None);
+
+        draw_target.draw_surface(source_surface,
+                                 dest_rect.to_azure_style(),
+                                 image_rect.to_azure_style(),
+                                 draw_surface_options,
+                                 draw_options);
+    }
 }
 
 pub trait PointToi32 {
@@ -805,9 +901,9 @@ pub trait ToAzurePattern {
 
 impl ToAzurePattern for FillOrStrokeStyle {
     fn to_azure_pattern(&self, drawtarget: &DrawTarget) -> Option<Pattern> {
-        Some(match *self {
+        match *self {
             FillOrStrokeStyle::Color(ref color) => {
-                Pattern::Color(ColorPattern::new(color.to_azure_style()))
+                Some(Pattern::Color(ColorPattern::new(color.to_azure_style())))
             },
             FillOrStrokeStyle::LinearGradient(ref linear_gradient_style) => {
                 let gradient_stops: Vec<GradientStop> = linear_gradient_style.stops.iter().map(|s| {
@@ -817,12 +913,11 @@ impl ToAzurePattern for FillOrStrokeStyle {
                     }
                 }).collect();
 
-                Pattern::LinearGradient(LinearGradientPattern::new(
+                Some(Pattern::LinearGradient(LinearGradientPattern::new(
                     &Point2D::new(linear_gradient_style.x0 as AzFloat, linear_gradient_style.y0 as AzFloat),
                     &Point2D::new(linear_gradient_style.x1 as AzFloat, linear_gradient_style.y1 as AzFloat),
                     drawtarget.create_gradient_stops(&gradient_stops, ExtendMode::Clamp),
-                    &Transform2D::identity(),
-                ))
+                    &Transform2D::identity())))
             },
             FillOrStrokeStyle::RadialGradient(ref radial_gradient_style) => {
                 let gradient_stops: Vec<GradientStop> = radial_gradient_style.stops.iter().map(|s| {
@@ -832,30 +927,27 @@ impl ToAzurePattern for FillOrStrokeStyle {
                     }
                 }).collect();
 
-                Pattern::RadialGradient(RadialGradientPattern::new(
+                Some(Pattern::RadialGradient(RadialGradientPattern::new(
                     &Point2D::new(radial_gradient_style.x0 as AzFloat, radial_gradient_style.y0 as AzFloat),
                     &Point2D::new(radial_gradient_style.x1 as AzFloat, radial_gradient_style.y1 as AzFloat),
                     radial_gradient_style.r0 as AzFloat, radial_gradient_style.r1 as AzFloat,
                     drawtarget.create_gradient_stops(&gradient_stops, ExtendMode::Clamp),
-                    &Transform2D::identity(),
-                ))
+                    &Transform2D::identity())))
             },
             FillOrStrokeStyle::Surface(ref surface_style) => {
-                let source_surface = drawtarget.create_source_surface_from_data(
-                    &surface_style.surface_data,
-                    // FIXME(nox): Why are those i32 values?
-                    surface_style.surface_size.to_i32(),
-                    surface_style.surface_size.width as i32 * 4,
-                    SurfaceFormat::B8G8R8A8,
-                )?;
-                Pattern::Surface(SurfacePattern::new(
-                    source_surface.azure_source_surface,
-                    surface_style.repeat_x,
-                    surface_style.repeat_y,
-                    &Transform2D::identity(),
-                ))
+                drawtarget.create_source_surface_from_data(&surface_style.surface_data,
+                                                           surface_style.surface_size,
+                                                           surface_style.surface_size.width * 4,
+                                                           SurfaceFormat::B8G8R8A8)
+                          .map(|source_surface| {
+                    Pattern::Surface(SurfacePattern::new(
+                        source_surface.azure_source_surface,
+                        surface_style.repeat_x,
+                        surface_style.repeat_y,
+                        &Transform2D::identity()))
+                    })
             }
-        })
+        }
     }
 }
 

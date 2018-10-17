@@ -2,12 +2,11 @@ import io
 import json
 import os
 import ssl
+import urllib2
 
 import html5lib
 import pytest
 from selenium import webdriver
-from six import text_type
-from six.moves import urllib
 
 from wptserver import WPTServer
 
@@ -64,8 +63,8 @@ class HTMLItem(pytest.Item, pytest.Collector):
         # Some tests are reliant on the WPT servers substitution functionality,
         # so tests must be retrieved from the server rather than read from the
         # file system directly.
-        handle = urllib.request.urlopen(self.url,
-                                        context=parent.session.config.ssl_context)
+        handle = urllib2.urlopen(self.url,
+                                 context=parent.session.config.ssl_context)
         try:
             markup = handle.read()
         finally:
@@ -88,7 +87,7 @@ class HTMLItem(pytest.Item, pytest.Collector):
                 continue
             if element.tag == 'script':
                 if element.attrib.get('id') == 'expected':
-                    self.expected = json.loads(text_type(element.text))
+                    self.expected = json.loads(unicode(element.text))
 
                 src = element.attrib.get('src', '')
 
@@ -187,7 +186,7 @@ class HTMLItem(pytest.Item, pytest.Collector):
     @staticmethod
     def _assert_sequence(nums):
         if nums and len(nums) > 0:
-            assert nums == list(range(1, nums[-1] + 1))
+            assert nums == range(1, nums[-1] + 1)
 
     @staticmethod
     def _scrub_stack(test_obj):

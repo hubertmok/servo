@@ -48,7 +48,6 @@ use dom::bindings::str::{DOMString, USVString};
 use dom::bindings::utils::WindowProxyHandler;
 use dom::document::PendingRestyle;
 use dom::htmlimageelement::SourceSet;
-use dom::htmlmediaelement::MediaFrameRenderer;
 use encoding_rs::{Decoder, Encoding};
 use euclid::{Transform2D, Transform3D, Point2D, Vector2D, Rect, TypedSize2D, TypedScale};
 use euclid::Length as EuclidLength;
@@ -91,14 +90,12 @@ use servo_arc::Arc as ServoArc;
 use servo_atoms::Atom;
 use servo_channel::{Receiver, Sender};
 use servo_media::Backend;
-use servo_media::Error as ServoMediaError;
 use servo_media::audio::analyser_node::AnalysisEngine;
 use servo_media::audio::buffer_source_node::AudioBuffer;
 use servo_media::audio::context::AudioContext;
 use servo_media::audio::graph::NodeId;
 use servo_media::audio::panner_node::{DistanceModel, PanningModel};
 use servo_media::audio::param::ParamType;
-use servo_media::player::Player;
 use servo_url::{ImmutableOrigin, MutableOrigin, ServoUrl};
 use smallvec::SmallVec;
 use std::cell::{Cell, RefCell, UnsafeCell};
@@ -107,7 +104,7 @@ use std::hash::{BuildHasher, Hash};
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::{SystemTime, Instant};
 use style::attr::{AttrIdentifier, AttrValue, LengthOrPercentageOrAuto};
@@ -124,7 +121,7 @@ use style::stylesheets::keyframes_rule::Keyframe;
 use style::values::specified::Length;
 use time::Duration;
 use uuid::Uuid;
-use webrender_api::{DocumentId, ImageKey, RenderApiSender};
+use webrender_api::{DocumentId, ImageKey};
 use webvr_traits::WebVRGamepadHand;
 
 /// A trait to allow tracing (only) DOM objects.
@@ -264,13 +261,7 @@ unsafe impl<T: JSTraceable> JSTraceable for VecDeque<T> {
     }
 }
 
-unsafe impl<A, B, C, D> JSTraceable for (A, B, C, D)
-where
-    A: JSTraceable,
-    B: JSTraceable,
-    C: JSTraceable,
-    D: JSTraceable,
-{
+unsafe impl<T: JSTraceable> JSTraceable for (T, T, T, T) {
     unsafe fn trace(&self, trc: *mut JSTracer) {
         self.0.trace(trc);
         self.1.trace(trc);
@@ -457,9 +448,6 @@ unsafe_no_jsmanaged_fields!(AudioBuffer);
 unsafe_no_jsmanaged_fields!(AudioContext<Backend>);
 unsafe_no_jsmanaged_fields!(NodeId);
 unsafe_no_jsmanaged_fields!(AnalysisEngine, DistanceModel, PanningModel, ParamType);
-unsafe_no_jsmanaged_fields!(Player<Error=ServoMediaError>);
-unsafe_no_jsmanaged_fields!(Mutex<MediaFrameRenderer>);
-unsafe_no_jsmanaged_fields!(RenderApiSender);
 
 unsafe impl<'a> JSTraceable for &'a str {
     #[inline]
@@ -622,13 +610,6 @@ unsafe impl<U> JSTraceable for TypedSize2D<i32, U> {
 }
 
 unsafe impl<U> JSTraceable for TypedSize2D<f32, U> {
-    #[inline]
-    unsafe fn trace(&self, _trc: *mut JSTracer) {
-        // Do nothing
-    }
-}
-
-unsafe impl<U> JSTraceable for TypedSize2D<u32, U> {
     #[inline]
     unsafe fn trace(&self, _trc: *mut JSTracer) {
         // Do nothing

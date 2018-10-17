@@ -127,20 +127,15 @@ pub enum AnimatedProperty {
 }
 
 impl AnimatedProperty {
-    /// Get the id of the property we're animating.
-    pub fn id(&self) -> LonghandId {
-        match *self {
-            % for prop in data.longhands:
-            % if prop.animatable and not prop.logical:
-            AnimatedProperty::${prop.camel_case}(..) => LonghandId::${prop.camel_case},
-            % endif
-            % endfor
-        }
-    }
-
     /// Get the name of this property.
     pub fn name(&self) -> &'static str {
-        self.id().name()
+        match *self {
+            % for prop in data.longhands:
+                % if prop.animatable and not prop.logical:
+                    AnimatedProperty::${prop.camel_case}(..) => "${prop.name}",
+                % endif
+            % endfor
+        }
     }
 
     /// Whether this interpolation does animate, that is, whether the start and

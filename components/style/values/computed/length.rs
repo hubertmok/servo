@@ -202,34 +202,21 @@ impl ToCss for CalcLengthOrPercentage {
     {
         use num_traits::Zero;
 
-        let length = self.unclamped_length();
-        match self.percentage {
-            Some(p) => {
-                if length.px() == 0. && self.clamping_mode.clamp(p.0) == p.0 {
-                    return p.to_css(dest);
-                }
-            }
-            None => {
-                if self.clamping_mode.clamp(length.px()) == length.px() {
-                    return length.to_css(dest);
-                }
-            }
-        }
+        let (length, percentage) = match (self.length, self.percentage) {
+            (l, None) => return l.to_css(dest),
+            (l, Some(p)) if l.px() == 0. => return p.to_css(dest),
+            (l, Some(p)) => (l, p),
+        };
 
         dest.write_str("calc(")?;
-        if let Some(percentage) = self.percentage {
-            percentage.to_css(dest)?;
-            if length.px() != 0. {
-                dest.write_str(if length.px() < Zero::zero() {
-                    " - "
-                } else {
-                    " + "
-                })?;
-                length.abs().to_css(dest)?;
-            }
+        percentage.to_css(dest)?;
+
+        dest.write_str(if length.px() < Zero::zero() {
+            " - "
         } else {
-            length.to_css(dest)?;
-        }
+            " + "
+        })?;
+        length.abs().to_css(dest)?;
 
         dest.write_str(")")
     }

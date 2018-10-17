@@ -18,8 +18,8 @@ use task_source::{TaskSource, TaskSourceName};
 #[dom_struct]
 pub struct AudioScheduledSourceNode {
     node: AudioNode,
-    has_start: Cell<bool>,
-    has_stop: Cell<bool>,
+    started: Cell<bool>,
+    stopped: Cell<bool>,
 }
 
 impl AudioScheduledSourceNode {
@@ -39,8 +39,8 @@ impl AudioScheduledSourceNode {
                 number_of_inputs,
                 number_of_outputs,
             )?,
-            has_start: Cell::new(false),
-            has_stop: Cell::new(false),
+            started: Cell::new(false),
+            stopped: Cell::new(false),
         })
     }
 
@@ -48,8 +48,8 @@ impl AudioScheduledSourceNode {
         &self.node
     }
 
-    pub fn has_start(&self) -> bool {
-        self.has_start.get()
+    pub fn started(&self) -> bool {
+        self.started.get()
     }
 }
 
@@ -59,11 +59,7 @@ impl AudioScheduledSourceNodeMethods for AudioScheduledSourceNode {
 
     // https://webaudio.github.io/web-audio-api/#dom-audioscheduledsourcenode-start
     fn Start(&self, when: Finite<f64>) -> Fallible<()> {
-        if *when < 0. {
-            return Err(Error::Range("'when' must be a positive value".to_owned()));
-        }
-
-        if self.has_start.get() || self.has_stop.get() {
+        if self.started.get() || self.stopped.get() {
             return Err(Error::InvalidState);
         }
 
@@ -93,7 +89,7 @@ impl AudioScheduledSourceNodeMethods for AudioScheduledSourceNode {
                 AudioScheduledSourceNodeMessage::RegisterOnEndedCallback(callback),
             ));
 
-        self.has_start.set(true);
+        self.started.set(true);
         self.node
             .message(AudioNodeMessage::AudioScheduledSourceNode(
                 AudioScheduledSourceNodeMessage::Start(*when),
@@ -103,14 +99,10 @@ impl AudioScheduledSourceNodeMethods for AudioScheduledSourceNode {
 
     // https://webaudio.github.io/web-audio-api/#dom-audioscheduledsourcenode-stop
     fn Stop(&self, when: Finite<f64>) -> Fallible<()> {
-        if *when < 0. {
-            return Err(Error::Range("'when' must be a positive value".to_owned()));
-        }
-
-        if !self.has_start.get() {
+        if !self.started.get() {
             return Err(Error::InvalidState);
         }
-        self.has_stop.set(true);
+        self.stopped.set(true);
         self.node
             .message(AudioNodeMessage::AudioScheduledSourceNode(
                 AudioScheduledSourceNodeMessage::Stop(*when),

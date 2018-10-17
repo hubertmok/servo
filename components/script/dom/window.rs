@@ -123,7 +123,6 @@ use task_source::TaskSourceName;
 use task_source::dom_manipulation::DOMManipulationTaskSource;
 use task_source::file_reading::FileReadingTaskSource;
 use task_source::history_traversal::HistoryTraversalTaskSource;
-use task_source::media_element::MediaElementTaskSource;
 use task_source::networking::NetworkingTaskSource;
 use task_source::performance_timeline::PerformanceTimelineTaskSource;
 use task_source::remote_event::RemoteEventTaskSource;
@@ -133,7 +132,7 @@ use time;
 use timers::{IsInterval, TimerCallback};
 use url::Position;
 use webdriver_handlers::jsval_to_webdriver;
-use webrender_api::{DeviceIntPoint, DeviceUintSize, DocumentId, ExternalScrollId, RenderApiSender};
+use webrender_api::{ExternalScrollId, DeviceIntPoint, DeviceUintSize, DocumentId};
 use webvr_traits::WebVRMsg;
 
 /// Current state of the window object
@@ -175,8 +174,6 @@ pub struct Window {
     script_chan: MainThreadScriptChan,
     #[ignore_malloc_size_of = "task sources are hard"]
     dom_manipulation_task_source: DOMManipulationTaskSource,
-    #[ignore_malloc_size_of = "task sources are hard"]
-    media_element_task_source: MediaElementTaskSource,
     #[ignore_malloc_size_of = "task sources are hard"]
     user_interaction_task_source: UserInteractionTaskSource,
     #[ignore_malloc_size_of = "task sources are hard"]
@@ -311,9 +308,6 @@ pub struct Window {
 
     /// Flag to identify whether mutation observers are present(true)/absent(false)
     exists_mut_observer: Cell<bool>,
-    /// Webrender API Sender
-    #[ignore_malloc_size_of = "defined in webrender_api"]
-    webrender_api_sender: RenderApiSender,
 }
 
 impl Window {
@@ -360,10 +354,6 @@ impl Window {
 
     pub fn dom_manipulation_task_source(&self) -> DOMManipulationTaskSource {
         self.dom_manipulation_task_source.clone()
-    }
-
-    pub fn media_element_task_source(&self) -> MediaElementTaskSource {
-        self.media_element_task_source.clone()
     }
 
     pub fn user_interaction_task_source(&self) -> UserInteractionTaskSource {
@@ -492,10 +482,6 @@ impl Window {
             },
         }
         self.add_pending_reflow();
-    }
-
-    pub fn get_webrender_api_sender(&self) -> RenderApiSender {
-        self.webrender_api_sender.clone()
     }
 }
 
@@ -2068,7 +2054,6 @@ impl Window {
         runtime: Rc<Runtime>,
         script_chan: MainThreadScriptChan,
         dom_manipulation_task_source: DOMManipulationTaskSource,
-        media_element_task_source: MediaElementTaskSource,
         user_interaction_task_source: UserInteractionTaskSource,
         networking_task_source: NetworkingTaskSource,
         history_traversal_task_source: HistoryTraversalTaskSource,
@@ -2098,7 +2083,6 @@ impl Window {
         webvr_chan: Option<IpcSender<WebVRMsg>>,
         microtask_queue: Rc<MicrotaskQueue>,
         webrender_document: DocumentId,
-        webrender_api_sender: RenderApiSender,
     ) -> DomRoot<Self> {
         let layout_rpc: Box<LayoutRPC + Send> = {
             let (rpc_send, rpc_recv) = channel();
@@ -2124,7 +2108,6 @@ impl Window {
             ),
             script_chan,
             dom_manipulation_task_source,
-            media_element_task_source,
             user_interaction_task_source,
             networking_task_source,
             history_traversal_task_source,
@@ -2178,7 +2161,6 @@ impl Window {
             paint_worklet: Default::default(),
             webrender_document,
             exists_mut_observer: Cell::new(false),
-            webrender_api_sender,
         });
 
         unsafe { WindowBinding::Wrap(runtime.cx(), win) }

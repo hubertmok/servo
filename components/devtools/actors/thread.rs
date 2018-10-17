@@ -34,13 +34,6 @@ struct ThreadResumedReply {
 }
 
 #[derive(Serialize)]
-struct ThreadInterruptedReply {
-    from: String,
-    #[serde(rename = "type")]
-    type_: String,
-}
-
-#[derive(Serialize)]
 struct ReconfigureReply {
     from: String,
 }
@@ -95,15 +88,6 @@ impl Actor for ThreadActor {
                 let msg = ThreadResumedReply {
                     from: self.name(),
                     type_: "resumed".to_owned(),
-                };
-                stream.write_json_packet(&msg);
-                ActorMessageStatus::Processed
-            },
-
-            "interrupt" => {
-                let msg = ThreadInterruptedReply {
-                    from: self.name(),
-                    type_: "interrupted".to_owned(),
                 };
                 stream.write_json_packet(&msg);
                 ActorMessageStatus::Processed

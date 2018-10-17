@@ -2,12 +2,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+use canvas_traits::canvas::byte_swap;
 use canvas_traits::webgl::*;
 use euclid::Size2D;
 use fnv::FnvHashMap;
 use gleam::gl;
+use ipc_channel::ipc::IpcBytesSender;
 use offscreen_gl_context::{GLContext, GLContextAttributes, GLLimits, NativeGLContextMethods};
-use pixels;
 use std::thread;
 use super::gl_context::{GLContextFactory, GLContextWrapper};
 use webrender;
@@ -136,8 +137,8 @@ impl<VR: WebVRRenderHandler + 'static> WebGLThread<VR> {
             WebGLMsg::RemoveContext(ctx_id) => {
                 self.remove_webgl_context(ctx_id);
             },
-            WebGLMsg::WebGLCommand(ctx_id, command, backtrace) => {
-                self.handle_webgl_command(ctx_id, command, backtrace);
+            WebGLMsg::WebGLCommand(ctx_id, command) => {
+                self.handle_webgl_command(ctx_id, command);
             },
             WebGLMsg::WebVRCommand(ctx_id, command) => {
                 self.handle_webvr_command(ctx_id, command);
@@ -163,15 +164,10 @@ impl<VR: WebVRRenderHandler + 'static> WebGLThread<VR> {
     }
 
     /// Handles a WebGLCommand for a specific WebGLContext
-    fn handle_webgl_command(
-        &mut self,
-        context_id: WebGLContextId,
-        command: WebGLCommand,
-        backtrace: WebGLCommandBacktrace,
-    ) {
+    fn handle_webgl_command(&mut self, context_id: WebGLContextId, command: WebGLCommand) {
         let data = Self::make_current_if_needed_mut(context_id, &mut self.contexts, &mut self.bound_context_id);
         if let Some(data) = data {
-            data.ctx.apply_command(command, backtrace, &mut data.state);
+            data.ctx.apply_command(command, &mut data.state);
         }
     }
 
@@ -215,57 +211,55 @@ impl<VR: WebVRRenderHandler + 'static> WebGLThread<VR> {
     }
 
     /// Creates a new WebGLContext
-    fn create_webgl_context(
-        &mut self,
-        version: WebGLVersion,
-        size: Size2D<u32>,
-        attributes: GLContextAttributes,
-    ) -> Result<(WebGLContextId, GLLimits, WebGLContextShareMode), String> {
+    fn create_webgl_context(&mut self,
+                            version: WebGLVersion,
+                            size: Size2D<i32>,
+                            attributes: GLContextAttributes)
+                            -> Result<(WebGLContextId, GLLimits, WebGLContextShareMode), String> {
+        // First try to create a shared context for the best performance.
+        // Fallback to readback mode if the shared context creation fails.
+        let result = self.gl_factory.new_shared_context(version, size, attributes)
+                                    .map(|r| (r, WebGLContextShareMode::SharedTexture))
+                                    .or_else(|_| {
+                                        let ctx = self.gl_factory.new_context(version, size, attributes);
+                                        ctx.map(|r| (r, WebGLContextShareMode::Readback))
+                                    });
+
         // Creating a new GLContext may make the current bound context_id dirty.
         // Clear it to ensure that  make_current() is called in subsequent commands.
         self.bound_context_id = None;
 
-        // First try to create a shared context for the best performance.
-        // Fallback to readback mode if the shared context creation fails.
-        let (ctx, share_mode) = self.gl_factory
-            .new_shared_context(version, size, attributes)
-            .map(|r| (r, WebGLContextShareMode::SharedTexture))
-            .or_else(|err| {
-                warn!(
-                    "Couldn't create shared GL context ({}), using slow readback context instead.",
-                    err
-                );
-                let ctx = self.gl_factory.new_context(version, size, attributes)?;
-                Ok((ctx, WebGLContextShareMode::Readback))
-            })
-            .map_err(|msg: &str| msg.to_owned())?;
+        match result {
+            Ok((ctx, share_mode)) => {
+                let id = WebGLContextId(self.next_webgl_id);
+                let (size, texture_id, limits) = ctx.get_info();
+                self.next_webgl_id += 1;
+                self.contexts.insert(id, GLContextData {
+                    ctx,
+                    state: Default::default(),
+                });
+                self.cached_context_info.insert(id, WebGLContextInfo {
+                    texture_id,
+                    size,
+                    alpha: attributes.alpha,
+                    image_key: None,
+                    share_mode,
+                    gl_sync: None,
+                });
 
-        let id = WebGLContextId(self.next_webgl_id);
-        let (size, texture_id, limits) = ctx.get_info();
-        self.next_webgl_id += 1;
-        self.contexts.insert(id, GLContextData {
-            ctx,
-            state: Default::default(),
-        });
-        self.cached_context_info.insert(id, WebGLContextInfo {
-            texture_id,
-            size,
-            alpha: attributes.alpha,
-            image_key: None,
-            share_mode,
-            gl_sync: None,
-        });
-
-        Ok((id, limits, share_mode))
+                Ok((id, limits, share_mode))
+            },
+            Err(msg) => {
+                Err(msg.to_owned())
+            }
+        }
     }
 
     /// Resizes a WebGLContext
-    fn resize_webgl_context(
-        &mut self,
-        context_id: WebGLContextId,
-        size: Size2D<u32>,
-        sender: WebGLSender<Result<(), String>>,
-    ) {
+    fn resize_webgl_context(&mut self,
+                            context_id: WebGLContextId,
+                            size: Size2D<i32>,
+                            sender: WebGLSender<Result<(), String>>) {
         let data = Self::make_current_if_needed_mut(
             context_id,
             &mut self.contexts,
@@ -561,7 +555,7 @@ impl<VR: WebVRRenderHandler + 'static> WebGLThread<VR> {
             let src_slice = &orig_pixels[src_start .. src_start + stride];
             (&mut pixels[dst_start .. dst_start + stride]).clone_from_slice(&src_slice[..stride]);
         }
-        pixels::byte_swap_colors_inplace(&mut pixels);
+        byte_swap(&mut pixels);
         pixels
     }
 
@@ -635,8 +629,7 @@ impl<T: WebGLExternalImageApi> webrender::ExternalImageHandler for WebGLExternal
     /// The WR client should not change the image content until the unlock() call.
     fn lock(&mut self,
             key: webrender_api::ExternalImageId,
-            _channel_index: u8,
-            _rendering: webrender_api::ImageRendering) -> webrender::ExternalImage {
+            _channel_index: u8) -> webrender::ExternalImage {
         let ctx_id = WebGLContextId(key.0 as _);
         let (texture_id, size) = self.handler.lock(ctx_id);
 
@@ -677,8 +670,7 @@ impl WebGLImpl {
     pub fn apply<Native: NativeGLContextMethods>(
         ctx: &GLContext<Native>,
         state: &mut GLState,
-        command: WebGLCommand,
-        _backtrace: WebGLCommandBacktrace,
+        command: WebGLCommand
     ) {
         match command {
             WebGLCommand::GetContextAttributes(ref sender) =>
@@ -791,27 +783,15 @@ impl WebGLImpl {
                 ctx.gl().pixel_store_i(name, val),
             WebGLCommand::PolygonOffset(factor, units) =>
                 ctx.gl().polygon_offset(factor, units),
-            WebGLCommand::ReadPixels(rect, format, pixel_type, ref sender) => {
-                let pixels = ctx.gl().read_pixels(
-                    rect.origin.x as i32,
-                    rect.origin.y as i32,
-                    rect.size.width as i32,
-                    rect.size.height as i32,
-                    format,
-                    pixel_type,
-                );
-                sender.send(&pixels).unwrap();
+            WebGLCommand::ReadPixels(x, y, width, height, format, pixel_type, ref chan) => {
+                Self::read_pixels(ctx.gl(), x, y, width, height, format, pixel_type, chan)
             }
             WebGLCommand::RenderbufferStorage(target, format, width, height) =>
                 ctx.gl().renderbuffer_storage(target, format, width, height),
             WebGLCommand::SampleCoverage(value, invert) =>
                 ctx.gl().sample_coverage(value, invert),
-            WebGLCommand::Scissor(x, y, width, height) => {
-                // FIXME(nox): Kinda unfortunate that some u32 values could
-                // end up as negative numbers here, but I don't even think
-                // that can happen in the real world.
-                ctx.gl().scissor(x, y, width as i32, height as i32);
-            },
+            WebGLCommand::Scissor(x, y, width, height) =>
+                ctx.gl().scissor(x, y, width, height),
             WebGLCommand::StencilFunc(func, ref_, mask) =>
                 ctx.gl().stencil_func(func, ref_, mask),
             WebGLCommand::StencilFuncSeparate(face, func, ref_, mask) =>
@@ -1211,14 +1191,7 @@ impl WebGLImpl {
         // TODO: update test expectations in order to enable debug assertions
         let error = ctx.gl().get_error();
         if error != gl::NO_ERROR {
-            error!("Last GL operation failed: {:?}", command);
-            #[cfg(feature = "webgl_backtrace")]
-            {
-                error!("Backtrace from failed WebGL API:\n{}", _backtrace.backtrace);
-                if let Some(backtrace) = _backtrace.js_backtrace {
-                    error!("JS backtrace from failed WebGL API:\n{}", backtrace);
-                }
-            }
+            error!("Last GL operation failed: {:?}", command)
         }
         assert_eq!(error, gl::NO_ERROR, "Unexpected WebGL error: 0x{:x} ({})", error, error);
     }
@@ -1341,6 +1314,20 @@ impl WebGLImpl {
             active_attribs,
             active_uniforms,
         }
+    }
+
+    fn read_pixels(
+        gl: &gl::Gl,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        format: u32,
+        pixel_type: u32,
+        chan: &IpcBytesSender,
+    ) {
+      let result = gl.read_pixels(x, y, width, height, format, pixel_type);
+      chan.send(&result).unwrap()
     }
 
     fn finish(gl: &gl::Gl, chan: &WebGLSender<()>) {

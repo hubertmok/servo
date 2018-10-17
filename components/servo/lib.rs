@@ -103,7 +103,7 @@ use std::borrow::Cow;
 use std::cmp::max;
 use std::path::PathBuf;
 use std::rc::Rc;
-use webrender::{RendererKind, ShaderPrecacheFlags};
+use webrender::RendererKind;
 use webvr::{WebVRThread, WebVRCompositorHandler};
 
 pub use gleam::gl;
@@ -190,16 +190,12 @@ where
                     enable_aa: opts.enable_text_antialiasing,
                     debug_flags: debug_flags,
                     recorder: recorder,
-                    precache_flags: if opts.precache_shaders {
-                        ShaderPrecacheFlags::FULL_COMPILE
-                    } else {
-                        ShaderPrecacheFlags::empty()
-                    },
+                    precache_shaders: opts.precache_shaders,
+                    enable_scrollbars: opts.output_file.is_none(),
                     renderer_kind: renderer_kind,
                     enable_subpixel_aa: opts.enable_subpixel_text_antialiasing,
                     ..Default::default()
                 },
-                None,
             ).expect("Unable to initialize webrender!")
         };
 

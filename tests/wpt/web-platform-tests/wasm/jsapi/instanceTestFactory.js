@@ -214,16 +214,4 @@ const instanceTestFactory = [
       };
     }
   ],
-
-  [
-    "stray argument",
-    function() {
-      return {
-        buffer: emptyModuleBinary,
-        args: [{}, {}],
-        exports: {},
-        verify: () => {}
-      };
-    }
-  ],
 ];

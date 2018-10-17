@@ -113,9 +113,6 @@ impl NetworkListener {
                             location_url: metadata.location_url.clone(),
                             headers: headers.clone().into_inner(),
                             referrer: metadata.referrer.clone(),
-                            status_code: metadata.status.as_ref()
-                                .map(|&(code, _)| code)
-                                .unwrap_or(200),
                         });
 
                         // XXXManishearth we don't have the cancel_chan anymore and

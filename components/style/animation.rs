@@ -214,7 +214,9 @@ pub enum Animation {
     /// A transition is just a single frame triggered at a time, with a reflow.
     ///
     /// the f64 field is the start time as returned by `time::precise_time_s()`.
-    Transition(OpaqueNode, f64, AnimationFrame),
+    ///
+    /// The `bool` field is werther this animation should no longer run.
+    Transition(OpaqueNode, f64, AnimationFrame, bool),
     /// A keyframes animation is identified by a name, and can have a
     /// node-dependent state (i.e. iteration count, etc.).
     ///
@@ -228,11 +230,21 @@ pub enum Animation {
 }
 
 impl Animation {
+    /// Mark this animation as expired.
+    #[inline]
+    pub fn mark_as_expired(&mut self) {
+        debug_assert!(!self.is_expired());
+        match *self {
+            Animation::Transition(_, _, _, ref mut expired) => *expired = true,
+            Animation::Keyframes(_, _, _, ref mut state) => state.expired = true,
+        }
+    }
+
     /// Whether this animation is expired.
     #[inline]
     pub fn is_expired(&self) -> bool {
         match *self {
-            Animation::Transition(..) => false,
+            Animation::Transition(_, _, _, expired) => expired,
             Animation::Keyframes(_, _, _, ref state) => state.expired,
         }
     }
@@ -241,7 +253,7 @@ impl Animation {
     #[inline]
     pub fn node(&self) -> &OpaqueNode {
         match *self {
-            Animation::Transition(ref node, _, _) => node,
+            Animation::Transition(ref node, _, _, _) => node,
             Animation::Keyframes(ref node, _, _, _) => node,
         }
     }
@@ -345,8 +357,8 @@ impl PropertyAnimation {
 
         let property_animation = PropertyAnimation {
             property: animated_property,
-            timing_function,
-            duration,
+            timing_function: timing_function,
+            duration: duration,
         };
 
         if property_animation.does_animate() {
@@ -438,15 +450,8 @@ pub fn start_transitions_if_applicable(
                 .iter()
                 .any(|animation| animation.has_the_same_end_value_as(&property_animation))
             {
-                debug!(
-                    "Not initiating transition for {}, other transition \
-                     found with the same end value",
-                    property_animation.property_name()
-                );
                 continue;
             }
-
-            debug!("Kicking off transition of {:?}", property_animation);
 
             // Kick off the animation.
             let box_style = new_style.get_box();
@@ -458,8 +463,9 @@ pub fn start_transitions_if_applicable(
                     start_time,
                     AnimationFrame {
                         duration: box_style.transition_duration_mod(i).seconds() as f64,
-                        property_animation,
+                        property_animation: property_animation,
                     },
+                    /* is_expired = */ false,
                 )).unwrap();
 
             had_animations = true;
@@ -538,9 +544,10 @@ where
 
     let box_style = new_style.get_box();
     for (i, name) in box_style.animation_name_iter().enumerate() {
-        let name = match name.as_atom() {
-            Some(atom) => atom,
-            None => continue,
+        let name = if let Some(atom) = name.as_atom() {
+            atom
+        } else {
+            continue;
         };
 
         debug!("maybe_start_animations: name={}", name);
@@ -549,65 +556,61 @@ where
             continue;
         }
 
-        let anim = match context.stylist.get_animation(name, element) {
-            Some(animation) => animation,
-            None => continue,
-        };
+        if let Some(anim) = context.stylist.get_animation(name, element) {
+            debug!("maybe_start_animations: animation {} found", name);
 
-        debug!("maybe_start_animations: animation {} found", name);
+            // If this animation doesn't have any keyframe, we can just continue
+            // without submitting it to the compositor, since both the first and
+            // the second keyframes would be synthetised from the computed
+            // values.
+            if anim.steps.is_empty() {
+                continue;
+            }
 
-        // If this animation doesn't have any keyframe, we can just continue
-        // without submitting it to the compositor, since both the first and
-        // the second keyframes would be synthetised from the computed
-        // values.
-        if anim.steps.is_empty() {
-            continue;
-        }
+            let delay = box_style.animation_delay_mod(i).seconds();
+            let now = context.timer.seconds();
+            let animation_start = now + delay as f64;
+            let duration = box_style.animation_duration_mod(i).seconds();
+            let iteration_state = match box_style.animation_iteration_count_mod(i) {
+                AnimationIterationCount::Infinite => KeyframesIterationState::Infinite,
+                AnimationIterationCount::Number(n) => KeyframesIterationState::Finite(0.0, n),
+            };
 
-        let delay = box_style.animation_delay_mod(i).seconds();
-        let now = context.timer.seconds();
-        let animation_start = now + delay as f64;
-        let duration = box_style.animation_duration_mod(i).seconds();
-        let iteration_state = match box_style.animation_iteration_count_mod(i) {
-            AnimationIterationCount::Infinite => KeyframesIterationState::Infinite,
-            AnimationIterationCount::Number(n) => KeyframesIterationState::Finite(0.0, n),
-        };
+            let animation_direction = box_style.animation_direction_mod(i);
 
-        let animation_direction = box_style.animation_direction_mod(i);
-
-        let initial_direction = match animation_direction {
-            AnimationDirection::Normal | AnimationDirection::Alternate => {
-                AnimationDirection::Normal
-            },
-            AnimationDirection::Reverse | AnimationDirection::AlternateReverse => {
-                AnimationDirection::Reverse
-            },
-        };
-
-        let running_state = match box_style.animation_play_state_mod(i) {
-            AnimationPlayState::Paused => KeyframesRunningState::Paused(0.),
-            AnimationPlayState::Running => KeyframesRunningState::Running,
-        };
-
-        new_animations_sender
-            .send(Animation::Keyframes(
-                node,
-                anim.clone(),
-                name.clone(),
-                KeyframesAnimationState {
-                    started_at: animation_start,
-                    duration: duration as f64,
-                    delay: delay as f64,
-                    iteration_state,
-                    running_state,
-                    direction: animation_direction,
-                    current_direction: initial_direction,
-                    expired: false,
-                    cascade_style: new_style.clone(),
+            let initial_direction = match animation_direction {
+                AnimationDirection::Normal | AnimationDirection::Alternate => {
+                    AnimationDirection::Normal
                 },
-            ))
-            .unwrap();
-        had_animations = true;
+                AnimationDirection::Reverse | AnimationDirection::AlternateReverse => {
+                    AnimationDirection::Reverse
+                },
+            };
+
+            let running_state = match box_style.animation_play_state_mod(i) {
+                AnimationPlayState::Paused => KeyframesRunningState::Paused(0.),
+                AnimationPlayState::Running => KeyframesRunningState::Running,
+            };
+
+            new_animations_sender
+                .send(Animation::Keyframes(
+                    node,
+                    anim.clone(),
+                    name.clone(),
+                    KeyframesAnimationState {
+                        started_at: animation_start,
+                        duration: duration as f64,
+                        delay: delay as f64,
+                        iteration_state: iteration_state,
+                        running_state: running_state,
+                        direction: animation_direction,
+                        current_direction: initial_direction,
+                        expired: false,
+                        cascade_style: new_style.clone(),
+                    },
+                )).unwrap();
+            had_animations = true;
+        }
     }
 
     had_animations
@@ -637,38 +640,21 @@ pub fn update_style_for_animation_frame(
     true
 }
 
-/// Returns the kind of animation update that happened.
-pub enum AnimationUpdate {
-    /// The style was successfully updated, the animation is still running.
-    Regular,
-    /// A style change canceled this animation.
-    AnimationCanceled,
-}
-
 /// Updates a single animation and associated style based on the current time.
-///
-/// FIXME(emilio): This doesn't handle any kind of dynamic change to the
-/// animation or transition properties in any reasonable way.
-///
-/// This should probably be split in two, one from updating animations and
-/// transitions in response to a style change (that is,
-/// consider_starting_transitions + maybe_start_animations, but handling
-/// canceled animations, duration changes, etc, there instead of here), and this
-/// function should be only about the style update in response of a transition.
 pub fn update_style_for_animation<E>(
     context: &SharedStyleContext,
     animation: &Animation,
     style: &mut Arc<ComputedValues>,
     font_metrics_provider: &FontMetricsProvider,
-) -> AnimationUpdate
-where
+) where
     E: TElement,
 {
-    debug!("update_style_for_animation: {:?}", animation);
+    debug!("update_style_for_animation: entering");
     debug_assert!(!animation.is_expired());
 
     match *animation {
-        Animation::Transition(_, start_time, ref frame) => {
+        Animation::Transition(_, start_time, ref frame, _) => {
+            debug!("update_style_for_animation: transition found");
             let now = context.timer.seconds();
             let mut new_style = (*style).clone();
             let updated_style =
@@ -676,14 +662,12 @@ where
             if updated_style {
                 *style = new_style
             }
-            // FIXME(emilio): Should check before updating the style that the
-            // transition_property still transitions this, or bail out if not.
-            //
-            // Or doing it in process_animations, only if transition_property
-            // changed somehow (even better).
-            AnimationUpdate::Regular
         },
         Animation::Keyframes(_, ref animation, ref name, ref state) => {
+            debug!(
+                "update_style_for_animation: animation found: \"{}\", {:?}",
+                name, state
+            );
             let duration = state.duration;
             let started_at = state.started_at;
 
@@ -701,22 +685,37 @@ where
 
             let index = match maybe_index {
                 Some(index) => index,
-                None => return AnimationUpdate::AnimationCanceled,
+                None => {
+                    warn!(
+                        "update_style_for_animation: Animation {:?} not found in style",
+                        name
+                    );
+                    return;
+                },
             };
 
             let total_duration = style.get_box().animation_duration_mod(index).seconds() as f64;
             if total_duration == 0. {
-                return AnimationUpdate::AnimationCanceled;
+                debug!(
+                    "update_style_for_animation: zero duration for animation {:?}",
+                    name
+                );
+                return;
             }
 
             let mut total_progress = (now - started_at) / total_duration;
             if total_progress < 0. {
                 warn!("Negative progress found for animation {:?}", name);
-                return AnimationUpdate::Regular;
+                return;
             }
             if total_progress > 1. {
                 total_progress = 1.;
             }
+
+            debug!(
+                "update_style_for_animation: anim \"{}\", steps: {:?}, state: {:?}, progress: {}",
+                name, animation.steps, state, total_progress
+            );
 
             // Get the target and the last keyframe position.
             let last_keyframe_position;
@@ -759,7 +758,11 @@ where
 
             let target_keyframe = match target_keyframe_position {
                 Some(target) => &animation.steps[target],
-                None => return AnimationUpdate::Regular,
+                None => {
+                    warn!("update_style_for_animation: No current keyframe found for animation \"{}\" at progress {}",
+                          name, total_progress);
+                    return;
+                },
             };
 
             let last_keyframe = &animation.steps[last_keyframe_position];
@@ -843,7 +846,6 @@ where
                 name
             );
             *style = new_style;
-            AnimationUpdate::Regular
         },
     }
 }
@@ -862,9 +864,8 @@ pub fn complete_expired_transitions(
         had_animations_to_expire = animations_to_expire.is_some();
         if let Some(ref animations) = animations_to_expire {
             for animation in *animations {
-                debug!("Updating expired animation {:?}", animation);
                 // TODO: support animation-fill-mode
-                if let Animation::Transition(_, _, ref frame) = *animation {
+                if let Animation::Transition(_, _, ref frame, _) = *animation {
                     frame.property_animation.update(Arc::make_mut(style), 1.0);
                 }
             }
