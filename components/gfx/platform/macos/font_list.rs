@@ -24,10 +24,9 @@ where
 
     let family_collection = core_text::font_collection::create_for_family(family_name);
     if let Some(family_collection) = family_collection {
-        if let Some(family_descriptors) = family_collection.get_descriptors() {
-            for family_descriptor in family_descriptors.iter() {
-                callback(family_descriptor.font_name());
-            }
+        let family_descriptors = family_collection.get_descriptors();
+        for family_descriptor in family_descriptors.iter() {
+            callback(family_descriptor.font_name());
         }
     }
 }

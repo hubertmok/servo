@@ -36,7 +36,6 @@ use html5ever::{LocalName, Namespace};
 use layout::data::StyleAndLayoutData;
 use layout::wrapper::GetRawData;
 use msg::constellation_msg::{BrowsingContextId, PipelineId};
-use net_traits::image::base::{Image, ImageMetadata};
 use range::Range;
 use script::layout_exports::{CharacterDataTypeId, ElementTypeId, HTMLElementTypeId, NodeTypeId};
 use script::layout_exports::{Document, Element, Node, Text};
@@ -44,8 +43,8 @@ use script::layout_exports::{LayoutCharacterDataHelpers, LayoutDocumentHelpers};
 use script::layout_exports::{LayoutElementHelpers, LayoutNodeHelpers, LayoutDom, RawLayoutElementHelpers};
 use script::layout_exports::NodeFlags;
 use script::layout_exports::PendingRestyle;
-use script_layout_interface::{HTMLCanvasData, HTMLMediaData, LayoutNodeType, OpaqueStyleAndLayoutData};
-use script_layout_interface::{SVGSVGData, StyleData, TrustedNodeAddress};
+use script_layout_interface::{HTMLCanvasData, LayoutNodeType, SVGSVGData, TrustedNodeAddress};
+use script_layout_interface::{OpaqueStyleAndLayoutData, StyleData};
 use script_layout_interface::wrapper_traits::{DangerousThreadSafeLayoutNode, GetLayoutData, LayoutNode};
 use script_layout_interface::wrapper_traits::{PseudoElementType, ThreadSafeLayoutElement, ThreadSafeLayoutNode};
 use selectors::attr::{AttrSelectorOperation, NamespaceConstraint, CaseSensitivity};
@@ -60,7 +59,6 @@ use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
-use std::sync::Arc as StdArc;
 use std::sync::atomic::Ordering;
 use style::CaseSensitivityExt;
 use style::applicable_declarations::ApplicableDeclarationBlock;
@@ -1050,19 +1048,9 @@ impl<'ln> ThreadSafeLayoutNode for ServoThreadSafeLayoutNode<'ln> {
         this.image_density()
     }
 
-    fn image_data(&self) -> Option<(Option<StdArc<Image>>, Option<ImageMetadata>)> {
-        let this = unsafe { self.get_jsmanaged() };
-        this.image_data()
-    }
-
     fn canvas_data(&self) -> Option<HTMLCanvasData> {
         let this = unsafe { self.get_jsmanaged() };
         this.canvas_data()
-    }
-
-    fn media_data(&self) -> Option<HTMLMediaData> {
-        let this = unsafe { self.get_jsmanaged() };
-        this.media_data()
     }
 
     fn svg_data(&self) -> Option<SVGSVGData> {

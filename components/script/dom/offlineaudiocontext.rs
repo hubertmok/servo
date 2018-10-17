@@ -64,33 +64,21 @@ impl OfflineAudioContext {
         channel_count: u32,
         length: u32,
         sample_rate: f32,
-    ) -> Fallible<DomRoot<OfflineAudioContext>> {
-        if channel_count > MAX_CHANNEL_COUNT ||
-            channel_count <= 0 ||
-            length <= 0 ||
-            sample_rate < MIN_SAMPLE_RATE ||
-            sample_rate > MAX_SAMPLE_RATE
-        {
-            return Err(Error::NotSupported);
-        }
+    ) -> DomRoot<OfflineAudioContext> {
         let context = OfflineAudioContext::new_inherited(channel_count, length, sample_rate);
-        Ok(reflect_dom_object(
-            Box::new(context),
-            window,
-            OfflineAudioContextBinding::Wrap,
-        ))
+        reflect_dom_object(Box::new(context), window, OfflineAudioContextBinding::Wrap)
     }
 
     pub fn Constructor(
         window: &Window,
         options: &OfflineAudioContextOptions,
     ) -> Fallible<DomRoot<OfflineAudioContext>> {
-        OfflineAudioContext::new(
+        Ok(OfflineAudioContext::new(
             window,
             options.numberOfChannels,
             options.length,
             *options.sampleRate,
-        )
+        ))
     }
 
     pub fn Constructor_(
@@ -99,7 +87,21 @@ impl OfflineAudioContext {
         length: u32,
         sample_rate: Finite<f32>,
     ) -> Fallible<DomRoot<OfflineAudioContext>> {
-        OfflineAudioContext::new(window, number_of_channels, length, *sample_rate)
+        if number_of_channels > MAX_CHANNEL_COUNT ||
+            number_of_channels <= 0 ||
+            length <= 0 ||
+            *sample_rate < MIN_SAMPLE_RATE ||
+            *sample_rate > MAX_SAMPLE_RATE
+        {
+            return Err(Error::NotSupported);
+        }
+
+        Ok(OfflineAudioContext::new(
+            window,
+            number_of_channels,
+            length,
+            *sample_rate,
+        ))
     }
 }
 
@@ -151,14 +153,10 @@ impl OfflineAudioContextMethods for OfflineAudioContext {
                     task!(resolve: move || {
                         let this = this.root();
                         let processed_audio = processed_audio.lock().unwrap();
-                        let mut processed_audio: Vec<_> = processed_audio
+                        let processed_audio: Vec<_> = processed_audio
                             .chunks(this.length as usize)
                             .map(|channel| channel.to_vec())
                             .collect();
-                        // it can end up being empty if the task failed
-                        if processed_audio.len() != this.length as usize {
-                            processed_audio.resize(this.length as usize, Vec::new())
-                        }
                         let buffer = AudioBuffer::new(
                             &this.global().as_window(),
                             this.channel_count,

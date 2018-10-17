@@ -121,7 +121,6 @@ use task_source::TaskSourceName;
 use task_source::dom_manipulation::DOMManipulationTaskSource;
 use task_source::file_reading::FileReadingTaskSource;
 use task_source::history_traversal::HistoryTraversalTaskSource;
-use task_source::media_element::MediaElementTaskSource;
 use task_source::networking::NetworkingTaskSource;
 use task_source::performance_timeline::PerformanceTimelineTaskSource;
 use task_source::remote_event::RemoteEventTaskSource;
@@ -131,7 +130,7 @@ use time::{get_time, precise_time_ns, Tm};
 use url::Position;
 use url::percent_encoding::percent_decode;
 use webdriver_handlers;
-use webrender_api::{DocumentId, RenderApiSender};
+use webrender_api::DocumentId;
 use webvr_traits::{WebVREvent, WebVRMsg};
 
 pub type ImageCacheMsg = (PipelineId, PendingImageResponse);
@@ -503,8 +502,6 @@ pub struct ScriptThread {
 
     dom_manipulation_task_sender: Sender<MainThreadScriptMsg>,
 
-    media_element_task_sender: Sender<MainThreadScriptMsg>,
-
     user_interaction_task_sender: Sender<MainThreadScriptMsg>,
 
     networking_task_sender: Box<ScriptChan>,
@@ -594,9 +591,6 @@ pub struct ScriptThread {
 
     /// The Webrender Document ID associated with this thread.
     webrender_document: DocumentId,
-
-    /// FIXME(victor):
-    webrender_api_sender: RenderApiSender,
 }
 
 /// In the event of thread panic, all data on the stack runs its destructor. However, there
@@ -1021,7 +1015,6 @@ impl ScriptThread {
 
             chan: MainThreadScriptChan(chan.clone()),
             dom_manipulation_task_sender: chan.clone(),
-            media_element_task_sender: chan.clone(),
             user_interaction_task_sender: chan.clone(),
             networking_task_sender: boxed_script_sender.clone(),
             file_reading_task_sender: boxed_script_sender.clone(),
@@ -1070,7 +1063,6 @@ impl ScriptThread {
             custom_element_reaction_stack: CustomElementReactionStack::new(),
 
             webrender_document: state.webrender_document,
-            webrender_api_sender: state.webrender_api_sender,
         }
     }
 
@@ -2155,10 +2147,6 @@ impl ScriptThread {
         DOMManipulationTaskSource(self.dom_manipulation_task_sender.clone(), pipeline_id)
     }
 
-    pub fn media_element_task_source(&self, pipeline_id: PipelineId) -> MediaElementTaskSource {
-        MediaElementTaskSource(self.media_element_task_sender.clone(), pipeline_id)
-    }
-
     pub fn performance_timeline_task_source(
         &self,
         pipeline_id: PipelineId,
@@ -2566,7 +2554,6 @@ impl ScriptThread {
             self.js_runtime.clone(),
             MainThreadScriptChan(sender.clone()),
             self.dom_manipulation_task_source(incomplete.pipeline_id),
-            self.media_element_task_source(incomplete.pipeline_id),
             self.user_interaction_task_source(incomplete.pipeline_id),
             self.networking_task_source(incomplete.pipeline_id),
             HistoryTraversalTaskSource(history_sender.clone()),
@@ -2597,7 +2584,6 @@ impl ScriptThread {
             self.webvr_chan.clone(),
             self.microtask_queue.clone(),
             self.webrender_document,
-            self.webrender_api_sender.clone(),
         );
 
         // Initialize the browsing context for the window.

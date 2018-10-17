@@ -17,7 +17,6 @@ extern crate ipc_channel;
 #[macro_use] extern crate malloc_size_of_derive;
 extern crate msg;
 extern crate num_traits;
-extern crate pixels;
 #[macro_use] extern crate serde;
 extern crate servo_arc;
 extern crate servo_url;

@@ -205,10 +205,6 @@ scheme host and port.""")
                               help="Allow the wptrunner to install fonts on your system")
     config_group.add_argument("--font-dir", action="store", type=abs_path, dest="font_dir",
                               help="Path to local font installation directory", default=None)
-    config_group.add_argument("--headless", action="store_true",
-                              help="Run browser in headless mode", default=None)
-    config_group.add_argument("--no-headless", action="store_false", dest="headless",
-                              help="Don't run browser in headless mode")
 
     build_type = parser.add_mutually_exclusive_group()
     build_type.add_argument("--debug-build", dest="debug", action="store_true",
@@ -369,7 +365,6 @@ def set_from_config(kwargs):
 
     check_paths(kwargs)
 
-
 def get_test_paths(config):
     # Set up test_paths
     test_paths = OrderedDict()
@@ -502,9 +497,6 @@ def check_args(kwargs):
         kwargs["certutil_binary"] = path
 
     if kwargs['extra_prefs']:
-        # If a single pref is passed in as a string, make it a list
-        if type(kwargs['extra_prefs']) in (str, unicode):
-            kwargs['extra_prefs'] = [kwargs['extra_prefs']]
         missing = any('=' not in prefarg for prefarg in kwargs['extra_prefs'])
         if missing:
             print >> sys.stderr, "Preferences via --setpref must be in key=value format"

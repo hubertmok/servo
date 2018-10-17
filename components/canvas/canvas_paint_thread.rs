@@ -80,7 +80,7 @@ impl<'a> CanvasPaintThread <'a> {
 
     pub fn create_canvas(
         &mut self,
-        size: Size2D<u32>,
+        size: Size2D<i32>,
         webrender_api_sender: webrender_api::RenderApiSender,
         antialias: bool
     ) -> CanvasId {
@@ -138,10 +138,13 @@ impl<'a> CanvasPaintThread <'a> {
                 source_rect,
                 smoothing_enabled,
             ) => {
-                let data = imagedata.map_or_else(
-                    || vec![0; image_size.width as usize * image_size.height as usize * 4],
-                    |bytes| bytes.into(),
-                );
+                let data = match imagedata {
+                    None => vec![0; image_size.width as usize * image_size.height as usize * 4],
+                    Some(mut data) => {
+                        byte_swap(&mut data);
+                        data.into()
+                    },
+                };
                 self.canvas(canvas_id).draw_image(
                     data,
                     image_size,
@@ -158,8 +161,8 @@ impl<'a> CanvasPaintThread <'a> {
                 smoothing
             ) => {
                 let image_data = self.canvas(canvas_id).read_pixels(
-                    source_rect.to_u32(),
-                    image_size.to_u32(),
+                    source_rect.to_i32(),
+                    image_size,
                 );
                 self.canvas(other_canvas_id).draw_image(
                     image_data.into(),
@@ -234,12 +237,21 @@ impl<'a> CanvasPaintThread <'a> {
             Canvas2dMsg::SetGlobalComposition(op) => {
                 self.canvas(canvas_id).set_global_composition(op)
             },
-            Canvas2dMsg::GetImageData(dest_rect, canvas_size, sender) => {
-                let pixels = self.canvas(canvas_id).read_pixels(dest_rect, canvas_size);
-                sender.send(&pixels).unwrap();
+            Canvas2dMsg::GetImageData(dest_rect, canvas_size, chan) => {
+                self.canvas(canvas_id).image_data(dest_rect, canvas_size, chan)
             },
-            Canvas2dMsg::PutImageData(rect, receiver) => {
-                self.canvas(canvas_id).put_image_data(receiver.recv().unwrap(), rect);
+            Canvas2dMsg::PutImageData(
+                imagedata,
+                offset,
+                image_data_size,
+                dirty_rect,
+            ) => {
+                self.canvas(canvas_id).put_image_data(
+                    imagedata.into(),
+                    offset,
+                    image_data_size,
+                    dirty_rect,
+                )
             },
             Canvas2dMsg::SetShadowOffsetX(value) => {
                 self.canvas(canvas_id).set_shadow_offset_x(value)

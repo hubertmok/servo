@@ -25,17 +25,14 @@ extern crate servo_channel;
 extern crate time;
 
 use actor::{Actor, ActorRegistry};
-use actors::browsing_context::BrowsingContextActor;
 use actors::console::ConsoleActor;
-use actors::device::DeviceActor;
-use actors::emulation::EmulationActor;
 use actors::framerate::FramerateActor;
 use actors::inspector::InspectorActor;
 use actors::network_event::{EventActor, NetworkEventActor, ResponseStartMsg};
 use actors::performance::PerformanceActor;
 use actors::profiler::ProfilerActor;
 use actors::root::RootActor;
-use actors::stylesheets::StyleSheetsActor;
+use actors::tab::TabActor;
 use actors::thread::ThreadActor;
 use actors::timeline::TimelineActor;
 use actors::worker::WorkerActor;
@@ -58,10 +55,7 @@ use time::precise_time_ns;
 mod actor;
 /// Corresponds to http://mxr.mozilla.org/mozilla-central/source/toolkit/devtools/server/actors/
 mod actors {
-    pub mod browsing_context;
     pub mod console;
-    pub mod device;
-    pub mod emulation;
     pub mod framerate;
     pub mod inspector;
     pub mod memory;
@@ -70,7 +64,7 @@ mod actors {
     pub mod performance;
     pub mod profiler;
     pub mod root;
-    pub mod stylesheets;
+    pub mod tab;
     pub mod thread;
     pub mod timeline;
     pub mod worker;
@@ -152,19 +146,9 @@ fn run_server(
 
     let mut registry = ActorRegistry::new();
 
-    let performance = PerformanceActor::new(registry.new_name("performance"));
-
-    let device = DeviceActor::new(registry.new_name("device"));
-
-    let root = Box::new(RootActor {
-        tabs: vec![],
-        device: device.name(),
-        performance: performance.name(),
-    });
+    let root = Box::new(RootActor { tabs: vec![] });
 
     registry.register(root);
-    registry.register(Box::new(performance));
-    registry.register(Box::new(device));
     registry.find::<RootActor>("root");
 
     let actors = registry.create_shareable();
@@ -218,7 +202,7 @@ fn run_server(
 
     // We need separate actor representations for each script global that exists;
     // clients can theoretically connect to multiple globals simultaneously.
-    // TODO: move this into the root or target modules?
+    // TODO: move this into the root or tab modules?
     fn handle_new_global(
         actors: Arc<Mutex<ActorRegistry>>,
         ids: (PipelineId, Option<WorkerId>),
@@ -231,17 +215,14 @@ fn run_server(
 
         let (pipeline, worker_id) = ids;
 
-        //TODO: move all this actor creation into a constructor method on BrowsingContextActor
-        let (target, console, emulation, inspector, timeline, profiler, performance, styleSheets, thread) = {
+        //TODO: move all this actor creation into a constructor method on TabActor
+        let (tab, console, inspector, timeline, profiler, performance, thread) = {
             let console = ConsoleActor {
                 name: actors.new_name("console"),
                 script_chan: script_sender.clone(),
                 pipeline: pipeline,
                 streams: RefCell::new(Vec::new()),
             };
-
-            let emulation = EmulationActor::new(actors.new_name("emulation"));
-
             let inspector = InspectorActor {
                 name: actors.new_name("inspector"),
                 walker: RefCell::new(None),
@@ -256,38 +237,31 @@ fn run_server(
             let profiler = ProfilerActor::new(actors.new_name("profiler"));
             let performance = PerformanceActor::new(actors.new_name("performance"));
 
-            // the strange switch between styleSheets and stylesheets is due
-            // to an inconsistency in devtools. See Bug #1498893 in bugzilla
-            let styleSheets = StyleSheetsActor::new(actors.new_name("stylesheets"));
             let thread = ThreadActor::new(actors.new_name("context"));
 
             let DevtoolsPageInfo { title, url } = page_info;
-            let target = BrowsingContextActor {
-                name: actors.new_name("target"),
+            let tab = TabActor {
+                name: actors.new_name("tab"),
                 title: String::from(title),
                 url: url.into_string(),
                 console: console.name(),
-                emulation: emulation.name(),
                 inspector: inspector.name(),
                 timeline: timeline.name(),
                 profiler: profiler.name(),
                 performance: performance.name(),
-                styleSheets: styleSheets.name(),
                 thread: thread.name(),
             };
 
             let root = actors.find_mut::<RootActor>("root");
-            root.tabs.push(target.name.clone());
+            root.tabs.push(tab.name.clone());
 
             (
-                target,
+                tab,
                 console,
-                emulation,
                 inspector,
                 timeline,
                 profiler,
                 performance,
-                styleSheets,
                 thread,
             )
         };
@@ -302,15 +276,13 @@ fn run_server(
             actors.register(Box::new(worker));
         }
 
-        actor_pipelines.insert(pipeline, target.name.clone());
-        actors.register(Box::new(target));
+        actor_pipelines.insert(pipeline, tab.name.clone());
+        actors.register(Box::new(tab));
         actors.register(Box::new(console));
-        actors.register(Box::new(emulation));
         actors.register(Box::new(inspector));
         actors.register(Box::new(timeline));
         actors.register(Box::new(profiler));
         actors.register(Box::new(performance));
-        actors.register(Box::new(styleSheets));
         actors.register(Box::new(thread));
     }
 
@@ -370,7 +342,7 @@ fn run_server(
             Some(actors.find::<WorkerActor>(actor_name).console.clone())
         } else {
             let actor_name = (*actor_pipelines).get(&id)?;
-            Some(actors.find::<BrowsingContextActor>(actor_name).console.clone())
+            Some(actors.find::<TabActor>(actor_name).console.clone())
         }
     }
 

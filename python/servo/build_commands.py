@@ -13,11 +13,8 @@ import datetime
 import os
 import os.path as path
 import platform
-import shutil
-import subprocess
 import sys
-import urllib
-import zipfile
+import shutil
 
 from time import time
 
@@ -184,14 +181,9 @@ class MachCommands(CommandBase):
                      default=None,
                      action='store_true',
                      help='Enable debug assertions in release')
-    @CommandArgument('--libsimpleservo',
-                     default=None,
-                     action='store_true',
-                     help='Build the libsimpleservo library instead of the servo executable')
     def build(self, target=None, release=False, dev=False, jobs=None,
               features=None, android=None, no_package=False, verbose=False, very_verbose=False,
-              debug_mozjs=False, params=None, with_debug_assertions=False,
-              libsimpleservo=False):
+              debug_mozjs=False, params=None, with_debug_assertions=False):
 
         opts = params or []
 
@@ -259,15 +251,8 @@ class MachCommands(CommandBase):
         self.ensure_bootstrapped(target=target)
         self.ensure_clobbered()
 
-        self.add_manifest_path(opts, android, libsimpleservo)
-
         if debug_mozjs:
             features += ["debugmozjs"]
-
-        if self.config["build"]["webgl-backtrace"]:
-            features += ["webgl-backtrace"]
-        if self.config["build"]["dom-backtrace"]:
-            features += ["dom-backtrace"]
 
         if features:
             opts += ["--features", "%s" % ' '.join(features)]
@@ -411,36 +396,6 @@ class MachCommands(CommandBase):
             if not os.path.exists(aar_out_dir):
                 os.makedirs(aar_out_dir)
             env["AAR_OUT_DIR"] = aar_out_dir
-            # GStreamer and its dependencies use pkg-config and this flag is required
-            # to make it work in a cross-compilation context.
-            env["PKG_CONFIG_ALLOW_CROSS"] = '1'
-            # Build the name of the package containing all GStreamer dependencies
-            # according to the build target.
-            gst_lib = "gst-build-{}".format(self.config["android"]["lib"])
-            gst_lib_zip = "%s.zip" % gst_lib
-            gst_dir = os.path.join(base_path, "gstreamer")
-            gst_lib_path = os.path.join(base_path, gst_dir, gst_lib)
-            pkg_config_path = os.path.join(gst_lib_path, "pkgconfig")
-            env["PKG_CONFIG_PATH"] = pkg_config_path
-            if not os.path.exists(gst_lib_path):
-                # Download GStreamer dependencies if they have not already been downloaded
-                print("Downloading GStreamer dependencies")
-                gst_url = "https://github.com/servo/libgstreamer_android_gen/blob/" \
-                    "ebb0f0097fec985e0cef988c54a28c2ba06761aa/out/%s?raw=true" % gst_lib_zip
-                print(gst_url)
-                urllib.urlretrieve(gst_url, gst_lib_zip)
-                zip_ref = zipfile.ZipFile(gst_lib_zip, "r")
-                zip_ref.extractall(gst_dir)
-                os.remove(gst_lib_zip)
-
-                # Change pkgconfig info to make all GStreamer dependencies point
-                # to the libgstreamer_android.so bundle.
-                for each in os.listdir(pkg_config_path):
-                    if each.endswith('.pc'):
-                        print("Setting pkgconfig info for %s" % each)
-                        pc = os.path.join(pkg_config_path, each)
-                        expr = "s#libdir=.*#libdir=%s#g" % gst_lib_path
-                        subprocess.call(["perl", "-i", "-pe", expr, pc])
 
         if very_verbose:
             print (["Calling", "cargo", "build"] + opts)

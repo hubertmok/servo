@@ -273,18 +273,14 @@ impl ToComputedValue for SpecifiedImageUrl {
     }
 }
 
-fn serialize_computed_url<W>(
-    url_value_data: &URLValueData,
-    dest: &mut CssWriter<W>,
-    get_url: unsafe extern "C" fn(*const URLValueData, *mut nsCString),
-) -> fmt::Result
+fn serialize_computed_url<W>(url_value_data: &URLValueData, dest: &mut CssWriter<W>) -> fmt::Result
 where
     W: Write,
 {
     dest.write_str("url(")?;
     unsafe {
         let mut string = nsCString::new();
-        get_url(url_value_data, &mut string);
+        bindings::Gecko_GetComputedURLSpec(url_value_data, &mut string);
         string.as_str_unchecked().to_css(dest)?;
     }
     dest.write_char(')')
@@ -302,11 +298,7 @@ impl ToCss for ComputedUrl {
     where
         W: Write,
     {
-        serialize_computed_url(
-            &self.0.url_value._base,
-            dest,
-            bindings::Gecko_GetComputedURLSpec,
-        )
+        serialize_computed_url(&self.0.url_value._base, dest)
     }
 }
 
@@ -327,11 +319,7 @@ impl ToCss for ComputedImageUrl {
     where
         W: Write,
     {
-        serialize_computed_url(
-            &self.0.image_value._base,
-            dest,
-            bindings::Gecko_GetComputedImageURLSpec,
-        )
+        serialize_computed_url(&self.0.image_value._base, dest)
     }
 }
 

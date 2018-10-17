@@ -221,9 +221,41 @@ impl PseudoElement {
         }
     }
 
-    /// To be removed.
+    /// For most (but not all) anon-boxes, we inherit all values from the
+    /// parent, this is the hook in the style system to allow this.
+    ///
+    /// FIXME(emilio): It's likely that this is broken in a variety of
+    /// situations, and what it really wants is just inherit some reset
+    /// properties...  Also, I guess it just could do all: inherit on the
+    /// stylesheet, though chances are that'd be kinda slow if we don't cache
+    /// them...
     pub fn inherits_all(&self) -> bool {
-        false
+        match *self {
+            PseudoElement::After |
+            PseudoElement::Before |
+            PseudoElement::Selection |
+            PseudoElement::DetailsContent |
+            PseudoElement::DetailsSummary |
+            // Anonymous table flows shouldn't inherit their parents properties in order
+            // to avoid doubling up styles such as transformations.
+            PseudoElement::ServoAnonymousTableCell |
+            PseudoElement::ServoAnonymousTableRow |
+            PseudoElement::ServoText |
+            PseudoElement::ServoInputText => false,
+
+            // For tables, we do want style to inherit, because TableWrapper is
+            // responsible for handling clipping and scrolling, while Table is
+            // responsible for creating stacking contexts.
+            //
+            // StackingContextCollectionFlags makes sure this is processed
+            // properly.
+            PseudoElement::ServoAnonymousTable |
+            PseudoElement::ServoAnonymousTableWrapper |
+            PseudoElement::ServoTableWrapper |
+            PseudoElement::ServoAnonymousBlock |
+            PseudoElement::ServoInlineBlockWrapper |
+            PseudoElement::ServoInlineAbsolute => true,
+        }
     }
 
     /// Covert non-canonical pseudo-element to canonical one, and keep a
@@ -553,7 +585,7 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
                 }
                 ServoInlineBlockWrapper
             },
-            "-servo-inline-absolute" => {
+            "-servo-input-absolute" => {
                 if !self.in_user_agent_stylesheet() {
                     return Err(location.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(name.clone())))
                 }

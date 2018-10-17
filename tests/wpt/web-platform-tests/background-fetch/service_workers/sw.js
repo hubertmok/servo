@@ -27,4 +27,5 @@ function handleBackgroundFetchUpdateEvent(event) {
 
 self.addEventListener('backgroundfetchsuccess', handleBackgroundFetchUpdateEvent);
 self.addEventListener('backgroundfetchfail', handleBackgroundFetchUpdateEvent);
-self.addEventListener('backgroundfetchabort', handleBackgroundFetchUpdateEvent);
+
+

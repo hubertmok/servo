@@ -16,8 +16,6 @@ debugmozjs = ['mozjs/debugmozjs']
 unstable = []
 unrooted_must_root_lint = ["script_plugins/unrooted_must_root_lint"]
 default = ["unrooted_must_root_lint"]
-webgl_backtrace = ["backtrace", "canvas_traits/webgl_backtrace"]
-js_backtrace = ["backtrace"]
 
 [build-dependencies]
 cmake = "0.1"
@@ -30,7 +28,7 @@ tinyfiledialogs = "3.0"
 
 [dependencies]
 app_units = "0.7"
-backtrace = {version = "0.3", optional = true}
+audio-video-metadata = "0.1.4"
 base64 = "0.6"
 bitflags = "1.0"
 bluetooth_traits = {path = "../bluetooth_traits"}
@@ -74,7 +72,6 @@ num-traits = "0.2"
 offscreen_gl_context = {version = "0.21", features = ["serde"]}
 parking_lot = "0.6"
 phf = "0.7.18"
-pixels = {path = "../pixels"}
 profile_traits = {path = "../profile_traits"}
 ref_filter_map = "1.0.1"
 ref_slice = "1.0"
@@ -109,3 +106,6 @@ webvr_traits = {path = "../webvr_traits"}
 
 [target.'cfg(not(target_os = "ios"))'.dependencies]
 mozangle = "0.1"
+
+[dev-dependencies]
+embedder_traits = { path = "../embedder_traits", features = ["tests"] }

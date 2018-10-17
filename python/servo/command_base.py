@@ -288,8 +288,6 @@ class CommandBase(object):
         self.config["build"].setdefault("rustflags", "")
         self.config["build"].setdefault("incremental", None)
         self.config["build"].setdefault("thinlto", False)
-        self.config["build"].setdefault("webgl-backtrace", False)
-        self.config["build"].setdefault("dom-backtrace", False)
 
         self.config.setdefault("android", {})
         self.config["android"].setdefault("sdk", "")
@@ -672,20 +670,8 @@ install them, let us know by filing a bug!")
     def ports_servo_crate(self):
         return path.join(self.context.topdir, "ports", "servo")
 
-    def add_manifest_path(self, args, android=False, libsimpleservo=False):
-        if "--manifest-path" not in args:
-            if libsimpleservo or android:
-                manifest = self.ports_libsimpleservo_manifest()
-            else:
-                manifest = self.ports_servo_manifest()
-            args.append("--manifest-path")
-            args.append(manifest)
-
     def ports_servo_manifest(self):
         return path.join(self.context.topdir, "ports", "servo", "Cargo.toml")
-
-    def ports_libsimpleservo_manifest(self):
-        return path.join(self.context.topdir, "ports", "libsimpleservo", "Cargo.toml")
 
     def servo_features(self):
         """Return a list of optional features to enable for the Servo crate"""

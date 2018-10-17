@@ -27,7 +27,6 @@ extern crate mime_guess;
 extern crate msg;
 extern crate net_traits;
 extern crate openssl;
-extern crate pixels;
 #[macro_use]
 extern crate profile_traits;
 #[macro_use] extern crate serde;
