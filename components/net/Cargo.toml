@@ -34,6 +34,7 @@ mime_guess = "1.8.0"
 msg = {path = "../msg"}
 net_traits = {path = "../net_traits"}
 openssl = "0.9"
+pixels = {path = "../pixels"}
 profile_traits = {path = "../profile_traits"}
 serde = "1.0"
 serde_json = "1.0"
@@ -51,7 +52,7 @@ webrender_api = {git = "https://github.com/servo/webrender", features = ["ipc"]}
 ws = { version = "0.7", features = ["ssl"] }
 
 [dev-dependencies]
-embedder_traits = { path = "../embedder_traits", features = ["tests"] }
+std_test_override = { path = "../std_test_override" }
 
 [[test]]
 name = "main"

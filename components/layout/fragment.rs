@@ -31,8 +31,7 @@ use msg::constellation_msg::{BrowsingContextId, PipelineId};
 use net_traits::image::base::{Image, ImageMetadata};
 use net_traits::image_cache::{ImageOrMetadataAvailable, UsePlaceholder};
 use range::*;
-use script_layout_interface::{HTMLCanvasData, HTMLCanvasDataSource};
-use script_layout_interface::SVGSVGData;
+use script_layout_interface::{HTMLCanvasData, HTMLCanvasDataSource, HTMLMediaData, SVGSVGData};
 use script_layout_interface::wrapper_traits::{PseudoElementType, ThreadSafeLayoutElement, ThreadSafeLayoutNode};
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 use servo_url::ServoUrl;
@@ -182,6 +181,7 @@ pub enum SpecificFragmentInfo {
 
     Iframe(IframeFragmentInfo),
     Image(Box<ImageFragmentInfo>),
+    Media(Box<MediaFragmentInfo>),
     Canvas(Box<CanvasFragmentInfo>),
     Svg(Box<SvgFragmentInfo>),
 
@@ -219,6 +219,7 @@ impl SpecificFragmentInfo {
             SpecificFragmentInfo::GeneratedContent(_) |
             SpecificFragmentInfo::Iframe(_) |
             SpecificFragmentInfo::Image(_) |
+            SpecificFragmentInfo::Media(_) |
             SpecificFragmentInfo::ScannedText(_) |
             SpecificFragmentInfo::Svg(_) |
             SpecificFragmentInfo::Table |
@@ -242,6 +243,7 @@ impl SpecificFragmentInfo {
     pub fn get_type(&self) -> &'static str {
         match *self {
             SpecificFragmentInfo::Canvas(_) => "SpecificFragmentInfo::Canvas",
+            SpecificFragmentInfo::Media(_) => "SpecificFragmentInfo::Media",
             SpecificFragmentInfo::Generic => "SpecificFragmentInfo::Generic",
             SpecificFragmentInfo::GeneratedContent(_) => "SpecificFragmentInfo::GeneratedContent",
             SpecificFragmentInfo::Iframe(_) => "SpecificFragmentInfo::Iframe",
@@ -365,6 +367,19 @@ impl CanvasFragmentInfo {
 }
 
 #[derive(Clone)]
+pub struct MediaFragmentInfo {
+    pub current_frame: Option<(webrender_api::ImageKey, i32, i32)>,
+}
+
+impl MediaFragmentInfo {
+    pub fn new(data: HTMLMediaData) -> MediaFragmentInfo {
+        MediaFragmentInfo {
+            current_frame: data.current_frame,
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct SvgFragmentInfo {
     pub dom_width: Au,
     pub dom_height: Au,
@@ -386,6 +401,11 @@ pub struct ImageFragmentInfo {
     pub metadata: Option<ImageMetadata>,
 }
 
+enum ImageOrMetadata {
+    Image(Arc<Image>),
+    Metadata(ImageMetadata),
+}
+
 impl ImageFragmentInfo {
     /// Creates a new image fragment from the given URL and local image cache.
     ///
@@ -397,14 +417,29 @@ impl ImageFragmentInfo {
         node: &N,
         layout_context: &LayoutContext,
     ) -> ImageFragmentInfo {
-        let image_or_metadata = url.and_then(|url| {
-            layout_context.get_or_request_image_or_meta(node.opaque(), url, UsePlaceholder::Yes)
-        });
+        // First use any image data present in the element...
+        let image_or_metadata = node.image_data().and_then(|(image, metadata)| {
+            match (image, metadata) {
+                (Some(image), _) => Some(ImageOrMetadata::Image(image)),
+                (None, Some(metadata)) => Some(ImageOrMetadata::Metadata(metadata)),
+                _ => None,
+            }
+        }).or_else(|| url.and_then(|url| {
+            // Otherwise query the image cache for anything known about the associated source URL.
+            layout_context.get_or_request_image_or_meta(
+                node.opaque(),
+                url,
+                UsePlaceholder::Yes
+            ).map(|result| match result {
+                ImageOrMetadataAvailable::ImageAvailable(i, _) => ImageOrMetadata::Image(i),
+                ImageOrMetadataAvailable::MetadataAvailable(m) => ImageOrMetadata::Metadata(m),
+            })
+        }));
 
         let current_pixel_density = density.unwrap_or(1f64);
 
         let (image, metadata) = match image_or_metadata {
-            Some(ImageOrMetadataAvailable::ImageAvailable(i, _)) => {
+            Some(ImageOrMetadata::Image(i)) => {
                 let height = (i.height as f64 / current_pixel_density) as u32;
                 let width = (i.width as f64 / current_pixel_density) as u32;
                 (
@@ -419,7 +454,7 @@ impl ImageFragmentInfo {
                     }),
                 )
             },
-            Some(ImageOrMetadataAvailable::MetadataAvailable(m)) => {
+            Some(ImageOrMetadata::Metadata(m)) => {
                 (
                     None,
                     Some(ImageMetadata {
@@ -834,6 +869,7 @@ impl Fragment {
     ) -> QuantitiesIncludedInIntrinsicInlineSizes {
         match self.specific {
             SpecificFragmentInfo::Canvas(_) |
+            SpecificFragmentInfo::Media(_) |
             SpecificFragmentInfo::Generic |
             SpecificFragmentInfo::GeneratedContent(_) |
             SpecificFragmentInfo::Iframe(_) |
@@ -978,6 +1014,13 @@ impl Fragment {
                 } else {
                     Au(0)
                 }
+            }
+            SpecificFragmentInfo::Media(ref info) => {
+                if let Some((_, width, _)) = info.current_frame {
+                    Au::from_px(width as i32)
+                } else {
+                    Au(0)
+                }
             },
             SpecificFragmentInfo::Canvas(ref info) => info.dom_width,
             SpecificFragmentInfo::Svg(ref info) => info.dom_width,
@@ -1001,6 +1044,13 @@ impl Fragment {
                 } else {
                     Au(0)
                 }
+            }
+            SpecificFragmentInfo::Media(ref info) => {
+                if let Some((_, _, height)) = info.current_frame {
+                    Au::from_px(height as i32)
+                } else {
+                    Au(0)
+                }
             },
             SpecificFragmentInfo::Canvas(ref info) => info.dom_height,
             SpecificFragmentInfo::Svg(ref info) => info.dom_height,
@@ -1014,6 +1064,7 @@ impl Fragment {
         match self.specific {
             SpecificFragmentInfo::Image(_)  |
             SpecificFragmentInfo::Canvas(_) |
+            SpecificFragmentInfo::Media(_) |
             // TODO(stshine): According to the SVG spec, whether a SVG element has intrinsic
             // aspect ratio is determined by the `preserveAspectRatio` attribute. Since for
             // now SVG is far from implemented, we simply choose the default behavior that
@@ -1549,6 +1600,7 @@ impl Fragment {
                 result.union_block(&block_flow.base.intrinsic_inline_sizes)
             },
             SpecificFragmentInfo::Image(_) |
+            SpecificFragmentInfo::Media(_) |
             SpecificFragmentInfo::Canvas(_) |
             SpecificFragmentInfo::Iframe(_) |
             SpecificFragmentInfo::Svg(_) => {
@@ -2024,6 +2076,7 @@ impl Fragment {
             },
             SpecificFragmentInfo::Canvas(_) |
             SpecificFragmentInfo::Image(_) |
+            SpecificFragmentInfo::Media(_) |
             SpecificFragmentInfo::Iframe(_) |
             SpecificFragmentInfo::InlineBlock(_) |
             SpecificFragmentInfo::InlineAbsoluteHypothetical(_) |
@@ -2115,6 +2168,7 @@ impl Fragment {
             SpecificFragmentInfo::Canvas(_) |
             SpecificFragmentInfo::Iframe(_) |
             SpecificFragmentInfo::Image(_) |
+            SpecificFragmentInfo::Media(_) |
             SpecificFragmentInfo::InlineBlock(_) |
             SpecificFragmentInfo::InlineAbsoluteHypothetical(_) |
             SpecificFragmentInfo::InlineAbsolute(_) |
@@ -2171,6 +2225,7 @@ impl Fragment {
             SpecificFragmentInfo::Iframe(_) |
             SpecificFragmentInfo::Canvas(_) |
             SpecificFragmentInfo::Image(_) |
+            SpecificFragmentInfo::Media(_) |
             SpecificFragmentInfo::Svg(_) => true,
             _ => false,
         }
@@ -2202,6 +2257,7 @@ impl Fragment {
             SpecificFragmentInfo::Canvas(_) |
             SpecificFragmentInfo::Iframe(_) |
             SpecificFragmentInfo::Image(_) |
+            SpecificFragmentInfo::Media(_) |
             SpecificFragmentInfo::Svg(_) |
             SpecificFragmentInfo::Generic |
             SpecificFragmentInfo::GeneratedContent(_) => {
@@ -2530,6 +2586,7 @@ impl Fragment {
             SpecificFragmentInfo::GeneratedContent(_) |
             SpecificFragmentInfo::Iframe(_) |
             SpecificFragmentInfo::Image(_) |
+            SpecificFragmentInfo::Media(_) |
             SpecificFragmentInfo::ScannedText(_) |
             SpecificFragmentInfo::Svg(_) |
             SpecificFragmentInfo::Table |
@@ -3057,6 +3114,7 @@ impl Fragment {
             SpecificFragmentInfo::GeneratedContent(_) |
             SpecificFragmentInfo::Iframe(_) |
             SpecificFragmentInfo::Image(_) |
+            SpecificFragmentInfo::Media(_) |
             SpecificFragmentInfo::ScannedText(_) |
             SpecificFragmentInfo::TruncatedFragment(_) |
             SpecificFragmentInfo::Svg(_) |

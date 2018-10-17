@@ -17,12 +17,18 @@ webdriver = ["webdriver_server"]
 energy-profiling = ["profile_traits/energy-profiling"]
 debugmozjs = ["script/debugmozjs"]
 googlevr = ["webvr/googlevr"]
+js_backtrace = ["script/js_backtrace"]
 webrender_debugger = ["webrender/debugger"]
 oculusvr = ["webvr/oculusvr"]
 unstable = [
     "euclid/unstable",
     "profile/unstable",
     "script/unstable",
+]
+webgl_backtrace = [
+    "script/webgl_backtrace",
+    "canvas/webgl_backtrace",
+    "canvas_traits/webgl_backtrace",
 ]
 
 [dependencies]
@@ -66,6 +72,3 @@ webvr_traits = {path = "../webvr_traits"}
 
 [target.'cfg(all(not(target_os = "windows"), not(target_os = "ios")))'.dependencies]
 gaol = {git = "https://github.com/servo/gaol"}
-
-[dev-dependencies]
-embedder_traits = { path = "../embedder_traits", features = ["tests"] }

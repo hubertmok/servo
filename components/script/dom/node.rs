@@ -43,6 +43,7 @@ use dom::htmliframeelement::{HTMLIFrameElement, HTMLIFrameElementLayoutMethods};
 use dom::htmlimageelement::{HTMLImageElement, LayoutHTMLImageElementHelpers};
 use dom::htmlinputelement::{HTMLInputElement, LayoutHTMLInputElementHelpers};
 use dom::htmllinkelement::HTMLLinkElement;
+use dom::htmlmediaelement::{HTMLMediaElement, LayoutHTMLMediaElementHelpers};
 use dom::htmlmetaelement::HTMLMetaElement;
 use dom::htmlstyleelement::HTMLStyleElement;
 use dom::htmltextareaelement::{HTMLTextAreaElement, LayoutHTMLTextAreaElementHelpers};
@@ -61,9 +62,10 @@ use js::jsapi::{JSContext, JSObject, JSRuntime};
 use libc::{self, c_void, uintptr_t};
 use malloc_size_of::{MallocSizeOf, MallocSizeOfOps};
 use msg::constellation_msg::{BrowsingContextId, PipelineId};
+use net_traits::image::base::{Image, ImageMetadata};
 use ref_slice::ref_slice;
-use script_layout_interface::{HTMLCanvasData, OpaqueStyleAndLayoutData, SVGSVGData};
-use script_layout_interface::{LayoutElementType, LayoutNodeType, TrustedNodeAddress};
+use script_layout_interface::{HTMLCanvasData, HTMLMediaData, LayoutElementType, LayoutNodeType};
+use script_layout_interface::{OpaqueStyleAndLayoutData, SVGSVGData, TrustedNodeAddress};
 use script_layout_interface::message::Msg;
 use script_thread::ScriptThread;
 use script_traits::DocumentActivity;
@@ -80,6 +82,7 @@ use std::default::Default;
 use std::iter;
 use std::mem;
 use std::ops::Range;
+use std::sync::Arc as StdArc;
 use style::context::QuirksMode;
 use style::dom::OpaqueNode;
 use style::selector_parser::{SelectorImpl, SelectorParser};
@@ -1085,7 +1088,9 @@ pub trait LayoutNodeHelpers {
     fn selection(&self) -> Option<Range<usize>>;
     fn image_url(&self) -> Option<ServoUrl>;
     fn image_density(&self) -> Option<f64>;
+    fn image_data(&self) -> Option<(Option<StdArc<Image>>, Option<ImageMetadata>)>;
     fn canvas_data(&self) -> Option<HTMLCanvasData>;
+    fn media_data(&self) -> Option<HTMLMediaData>;
     fn svg_data(&self) -> Option<SVGSVGData>;
     fn iframe_browsing_context_id(&self) -> Option<BrowsingContextId>;
     fn iframe_pipeline_id(&self) -> Option<PipelineId>;
@@ -1232,6 +1237,13 @@ impl LayoutNodeHelpers for LayoutDom<Node> {
     }
 
     #[allow(unsafe_code)]
+    fn image_data(&self) -> Option<(Option<StdArc<Image>>, Option<ImageMetadata>)> {
+        unsafe {
+            self.downcast::<HTMLImageElement>().map(|e| e.image_data())
+        }
+    }
+
+    #[allow(unsafe_code)]
     fn image_density(&self) -> Option<f64> {
         unsafe {
             self.downcast::<HTMLImageElement>()
@@ -1243,6 +1255,11 @@ impl LayoutNodeHelpers for LayoutDom<Node> {
     fn canvas_data(&self) -> Option<HTMLCanvasData> {
         self.downcast::<HTMLCanvasElement>()
             .map(|canvas| canvas.data())
+    }
+
+    fn media_data(&self) -> Option<HTMLMediaData> {
+        self.downcast::<HTMLMediaElement>()
+            .map(|media| media.data())
     }
 
     fn svg_data(&self) -> Option<SVGSVGData> {
@@ -2911,6 +2928,9 @@ impl Into<LayoutElementType> for ElementTypeId {
             ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLImageElement) => {
                 LayoutElementType::HTMLImageElement
             },
+            ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLMediaElement(_)) => {
+                LayoutElementType::HTMLMediaElement
+            },
             ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLInputElement) => {
                 LayoutElementType::HTMLInputElement
             },
@@ -2920,7 +2940,7 @@ impl Into<LayoutElementType> for ElementTypeId {
             ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLParagraphElement) => {
                 LayoutElementType::HTMLParagraphElement
             },
-            ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLTableCellElement(_)) => {
+            ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLTableCellElement) => {
                 LayoutElementType::HTMLTableCellElement
             },
             ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLTableColElement) => {

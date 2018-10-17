@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use euclid::Size2D;
+use euclid::{Rect, Size2D};
 use gleam::gl;
 use ipc_channel::ipc::{IpcBytesReceiver, IpcBytesSender};
 use offscreen_gl_context::{GLContextAttributes, GLLimits};
@@ -24,18 +24,30 @@ pub use ::webgl_channel::WebGLPipeline;
 /// Entry point channel type used for sending WebGLMsg messages to the WebGL renderer.
 pub use ::webgl_channel::WebGLChan;
 
+#[derive(Clone, Deserialize, Serialize)]
+pub struct WebGLCommandBacktrace {
+    #[cfg(feature = "webgl_backtrace")]
+    pub backtrace: String,
+    #[cfg(feature = "webgl_backtrace")]
+    pub js_backtrace: Option<String>,
+}
+
 /// WebGL Message API
 #[derive(Deserialize, Serialize)]
 pub enum WebGLMsg {
     /// Creates a new WebGLContext.
-    CreateContext(WebGLVersion, Size2D<i32>, GLContextAttributes,
-                  WebGLSender<Result<(WebGLCreateContextResult), String>>),
+    CreateContext(
+        WebGLVersion,
+        Size2D<u32>,
+        GLContextAttributes,
+        WebGLSender<Result<(WebGLCreateContextResult), String>>,
+    ),
     /// Resizes a WebGLContext.
-    ResizeContext(WebGLContextId, Size2D<i32>, WebGLSender<Result<(), String>>),
+    ResizeContext(WebGLContextId, Size2D<u32>, WebGLSender<Result<(), String>>),
     /// Drops a WebGLContext.
     RemoveContext(WebGLContextId),
     /// Runs a WebGLCommand in a specific WebGLContext.
-    WebGLCommand(WebGLContextId, WebGLCommand),
+    WebGLCommand(WebGLContextId, WebGLCommand, WebGLCommandBacktrace),
     /// Runs a WebVRCommand in a specific WebGLContext.
     WebVRCommand(WebGLContextId, WebVRCommand),
     /// Locks a specific WebGLContext. Lock messages are used for a correct synchronization
@@ -121,8 +133,8 @@ impl WebGLMsgSender {
 
     /// Send a WebGLCommand message
     #[inline]
-    pub fn send(&self, command: WebGLCommand) -> WebGLSendResult {
-        self.sender.send(WebGLMsg::WebGLCommand(self.ctx_id, command))
+    pub fn send(&self, command: WebGLCommand, backtrace: WebGLCommandBacktrace) -> WebGLSendResult {
+        self.sender.send(WebGLMsg::WebGLCommand(self.ctx_id, command, backtrace))
     }
 
     /// Send a WebVRCommand message
@@ -133,10 +145,11 @@ impl WebGLMsgSender {
 
     /// Send a resize message
     #[inline]
-    pub fn send_resize(&self,
-                       size: Size2D<i32>,
-                       sender: WebGLSender<Result<(), String>>)
-                       -> WebGLSendResult {
+    pub fn send_resize(
+        &self,
+        size: Size2D<u32>,
+        sender: WebGLSender<Result<(), String>>,
+    ) -> WebGLSendResult {
         self.sender.send(WebGLMsg::ResizeContext(self.ctx_id, size, sender))
     }
 
@@ -214,9 +227,9 @@ pub enum WebGLCommand {
     GetRenderbufferParameter(u32, u32, WebGLSender<i32>),
     PolygonOffset(f32, f32),
     RenderbufferStorage(u32, u32, i32, i32),
-    ReadPixels(i32, i32, i32, i32, u32, u32, IpcBytesSender),
+    ReadPixels(Rect<u32>, u32, u32, IpcBytesSender),
     SampleCoverage(f32, bool),
-    Scissor(i32, i32, i32, i32),
+    Scissor(i32, i32, u32, u32),
     StencilFunc(u32, i32, u32),
     StencilFuncSeparate(u32, u32, i32, u32),
     StencilMask(u32),
