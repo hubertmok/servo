@@ -95,14 +95,14 @@ use encoding_rs::{Encoding, UTF_8};
 use euclid::Point2D;
 use fetch::FetchCanceller;
 use html5ever::{LocalName, Namespace, QualName};
-use hyper::header::{Header, SetCookie};
 use hyper_serde::Serde;
 use ipc_channel::ipc::{self, IpcSender};
 use js::jsapi::{JSContext, JSObject, JSRuntime};
 use js::jsapi::JS_GetRuntime;
+use keyboard_types::{Key, KeyState, Modifiers};
 use metrics::{InteractiveFlag, InteractiveMetrics, InteractiveWindow, ProfilerMetadataFactory, ProgressiveWebMetric};
-use mime::{Mime, TopLevel, SubLevel};
-use msg::constellation_msg::{BrowsingContextId, Key, KeyModifiers, KeyState};
+use mime::{self, Mime};
+use msg::constellation_msg::BrowsingContextId;
 use net_traits::{FetchResponseMsg, IpcSend, ReferrerPolicy};
 use net_traits::CookieSource::NonHTTP;
 use net_traits::CoreResourceMsg::{GetCookiesForUrl, SetCookiesForUrl};
@@ -769,10 +769,12 @@ impl Document {
         // Step 1 is not handled here; the fragid is already obtained by the calling function
         // Step 2: Simply use None to indicate the top of the document.
         // Step 3 & 4
-        percent_decode(fragid.as_bytes()).decode_utf8().ok()
-        // Step 5
+        percent_decode(fragid.as_bytes())
+            .decode_utf8()
+            .ok()
+            // Step 5
             .and_then(|decoded_fragid| self.get_element_by_id(&Atom::from(decoded_fragid)))
-        // Step 6
+            // Step 6
             .or_else(|| self.get_anchor_by_name(fragid))
         // Step 7 & 8
     }
@@ -805,7 +807,8 @@ impl Document {
                     rect.origin.x.to_nearest_px() as f32,
                     rect.origin.y.to_nearest_px() as f32,
                 )
-            }).or_else(|| {
+            })
+            .or_else(|| {
                 if fragment.is_empty() || fragment.eq_ignore_ascii_case("top") {
                     // FIXME(stshine): this should be the origin of the stacking context space,
                     // which may differ under the influence of writing mode.
@@ -1348,13 +1351,7 @@ impl Document {
     }
 
     /// The entry point for all key processing for web content
-    pub fn dispatch_key_event(
-        &self,
-        ch: Option<char>,
-        key: Key,
-        state: KeyState,
-        modifiers: KeyModifiers,
-    ) {
+    pub fn dispatch_key_event(&self, keyboard_event: ::keyboard_types::KeyboardEvent) {
         let focused = self.get_focused_element();
         let body = self.GetBody();
 
@@ -1364,50 +1361,29 @@ impl Document {
             (&None, &None) => self.window.upcast(),
         };
 
-        let ctrl = modifiers.contains(KeyModifiers::CONTROL);
-        let alt = modifiers.contains(KeyModifiers::ALT);
-        let shift = modifiers.contains(KeyModifiers::SHIFT);
-        let meta = modifiers.contains(KeyModifiers::SUPER);
-
-        let is_composing = false;
-        let is_repeating = state == KeyState::Repeated;
-        let ev_type = DOMString::from(
-            match state {
-                KeyState::Pressed | KeyState::Repeated => "keydown",
-                KeyState::Released => "keyup",
-            }.to_owned(),
-        );
-
-        let props = KeyboardEvent::key_properties(ch, key, modifiers);
-
         let keyevent = KeyboardEvent::new(
             &self.window,
-            ev_type,
+            DOMString::from(keyboard_event.state.to_string()),
             true,
             true,
             Some(&self.window),
             0,
-            ch,
-            Some(key),
-            DOMString::from(props.key_string.clone()),
-            DOMString::from(props.code),
-            props.location,
-            is_repeating,
-            is_composing,
-            ctrl,
-            alt,
-            shift,
-            meta,
-            None,
-            props.key_code,
+            keyboard_event.key.clone(),
+            DOMString::from(keyboard_event.code.to_string()),
+            keyboard_event.location as u32,
+            keyboard_event.repeat,
+            keyboard_event.is_composing,
+            keyboard_event.modifiers,
+            0,
+            keyboard_event.key.legacy_keycode(),
         );
         let event = keyevent.upcast::<Event>();
         event.fire(target);
         let mut cancel_state = event.get_cancel_state();
 
         // https://w3c.github.io/uievents/#keys-cancelable-keys
-        if state != KeyState::Released &&
-            props.is_printable() &&
+        if keyboard_event.state == KeyState::Down &&
+            keyboard_event.key.legacy_charcode() != 0 &&
             cancel_state != EventDefault::Prevented
         {
             // https://w3c.github.io/uievents/#keypress-event-order
@@ -1418,18 +1394,13 @@ impl Document {
                 true,
                 Some(&self.window),
                 0,
-                ch,
-                Some(key),
-                DOMString::from(props.key_string),
-                DOMString::from(props.code),
-                props.location,
-                is_repeating,
-                is_composing,
-                ctrl,
-                alt,
-                shift,
-                meta,
-                props.char_code,
+                keyboard_event.key.clone(),
+                DOMString::from(keyboard_event.code.to_string()),
+                keyboard_event.location as u32,
+                keyboard_event.repeat,
+                keyboard_event.is_composing,
+                keyboard_event.modifiers,
+                keyboard_event.key.legacy_charcode(),
                 0,
             );
             let ev = event.upcast::<Event>();
@@ -1438,7 +1409,7 @@ impl Document {
         }
 
         if cancel_state == EventDefault::Allowed {
-            let msg = EmbedderMsg::KeyEvent(ch, key, state, modifiers);
+            let msg = EmbedderMsg::Keyboard(keyboard_event.clone());
             self.send_to_embedder(msg);
 
             // This behavior is unspecced
@@ -1446,8 +1417,10 @@ impl Document {
             // however *when* we do it is up to us.
             // Here, we're dispatching it after the key event so the script has a chance to cancel it
             // https://www.w3.org/Bugs/Public/show_bug.cgi?id=27337
-            match key {
-                Key::Space if state == KeyState::Released => {
+            match keyboard_event.key {
+                Key::Character(ref letter)
+                    if letter == " " && keyboard_event.state == KeyState::Up =>
+                {
                     let maybe_elem = target.downcast::<Element>();
                     if let Some(el) = maybe_elem {
                         synthetic_click_activation(
@@ -1459,11 +1432,15 @@ impl Document {
                             ActivationSource::NotFromClick,
                         )
                     }
-                },
-                Key::Enter if state == KeyState::Released => {
+                }
+                Key::Enter if keyboard_event.state == KeyState::Up => {
                     let maybe_elem = target.downcast::<Element>();
                     if let Some(el) = maybe_elem {
                         if let Some(a) = el.as_maybe_activatable() {
+                            let ctrl = keyboard_event.modifiers.contains(Modifiers::CONTROL);
+                            let alt = keyboard_event.modifiers.contains(Modifiers::ALT);
+                            let shift = keyboard_event.modifiers.contains(Modifiers::SHIFT);
+                            let meta = keyboard_event.modifiers.contains(Modifiers::META);
                             a.implicit_submission(ctrl, alt, shift, meta);
                         }
                     }
@@ -2552,14 +2529,12 @@ impl Document {
             implementation: Default::default(),
             content_type: match content_type {
                 Some(mime_data) => mime_data,
-                None => Mime::from(match is_html_document {
+                None => match is_html_document {
                     // https://dom.spec.whatwg.org/#dom-domimplementation-createhtmldocument
-                    IsHTMLDocument::HTMLDocument => Mime(TopLevel::Text, SubLevel::Html, vec![]),
+                    IsHTMLDocument::HTMLDocument => mime::TEXT_HTML,
                     // https://dom.spec.whatwg.org/#concept-document-content-type
-                    IsHTMLDocument::NonHTMLDocument => {
-                        Mime(TopLevel::Application, SubLevel::Xml, vec![])
-                    },
-                }),
+                    IsHTMLDocument::NonHTMLDocument => "application/xml".parse().unwrap(),
+                },
             },
             last_modified: last_modified,
             url: DomRefCell::new(url),
@@ -3367,8 +3342,10 @@ impl DocumentMethods for Document {
             local_name.make_ascii_lowercase();
         }
 
-        let is_xhtml = self.content_type.0 == TopLevel::Application &&
-            self.content_type.1.as_str() == "xhtml+xml";
+        let is_xhtml = self.content_type.type_() == mime::APPLICATION &&
+            self.content_type.subtype().as_str() == "xhtml" &&
+            self.content_type.suffix() == Some(mime::XML);
+
         let ns = if self.is_html_document || is_xhtml {
             ns!(html)
         } else {
@@ -3969,18 +3946,16 @@ impl DocumentMethods for Document {
             return Err(Error::Security);
         }
 
-        if let Ok(cookie_header) = SetCookie::parse_header(&vec![cookie.to_string().into_bytes()]) {
-            let cookies = cookie_header
-                .0
-                .into_iter()
-                .filter_map(|cookie| cookie_rs::Cookie::parse(cookie).ok().map(Serde))
-                .collect();
-            let _ = self
-                .window
+        let cookies = if let Some(cookie) = cookie_rs::Cookie::parse(cookie.to_string()).ok().map(Serde) {
+            vec![cookie]
+        } else {
+            vec![]
+        };
+
+        let _ = self.window
                 .upcast::<GlobalScope>()
                 .resource_threads()
                 .send(SetCookiesForUrl(self.url(), cookies, NonHTTP));
-        }
         Ok(())
     }
 

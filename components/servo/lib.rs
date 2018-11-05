@@ -82,7 +82,6 @@ use constellation::{FromCompositorLogger, FromScriptLogger};
 use constellation::content_process_sandbox_profile;
 use embedder_traits::{EmbedderMsg, EmbedderProxy, EmbedderReceiver, EventLoopWaker};
 use env_logger::Builder as EnvLoggerBuilder;
-use euclid::Length;
 #[cfg(all(not(target_os = "windows"), not(target_os = "ios")))]
 use gaol::sandbox::{ChildSandbox, ChildSandboxMethods};
 use gfx::font_cache_thread::FontCacheThread;
@@ -109,7 +108,7 @@ use webvr::{WebVRThread, WebVRCompositorHandler};
 pub use gleam::gl;
 pub use servo_config as config;
 pub use servo_url as url;
-pub use msg::constellation_msg::{KeyState, TopLevelBrowsingContextId as BrowserId};
+pub use msg::constellation_msg::{TopLevelBrowsingContextId as BrowserId};
 
 /// The in-process interface to Servo.
 ///
@@ -138,7 +137,7 @@ where
         let opts = opts::get();
 
         // Make sure the gl context is made current.
-        window.prepare_for_composite(Length::new(0), Length::new(0));
+        window.prepare_for_composite();
 
         // Reserving a namespace to create TopLevelBrowserContextId.
         PipelineNamespace::install(PipelineNamespaceId(0));
@@ -320,10 +319,10 @@ where
                 }
             },
 
-            WindowEvent::KeyEvent(ch, key, state, modifiers) => {
-                let msg = ConstellationMsg::KeyEvent(ch, key, state, modifiers);
+            WindowEvent::Keyboard(key_event) => {
+                let msg = ConstellationMsg::Keyboard(key_event);
                 if let Err(e) = self.constellation_chan.send(msg) {
-                    warn!("Sending key event to constellation failed ({:?}).", e);
+                    warn!("Sending keyboard event to constellation failed ({:?}).", e);
                 }
             },
 
@@ -399,12 +398,12 @@ where
                 (_, ShutdownState::ShuttingDown) => {},
 
                 (
-                    EmbedderMsg::KeyEvent(ch, key, state, modified),
+                    EmbedderMsg::Keyboard(key_event),
                     ShutdownState::NotShuttingDown,
                 ) => {
                     let event = (
                         top_level_browsing_context,
-                        EmbedderMsg::KeyEvent(ch, key, state, modified),
+                        EmbedderMsg::Keyboard(key_event),
                     );
                     self.embedder_events.push(event);
                 },

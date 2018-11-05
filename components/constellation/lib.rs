@@ -20,8 +20,9 @@ extern crate euclid;
 extern crate gaol;
 extern crate gfx;
 extern crate gfx_traits;
-extern crate hyper;
+extern crate http;
 extern crate ipc_channel;
+extern crate keyboard_types;
 extern crate layout_traits;
 #[macro_use]
 extern crate log;

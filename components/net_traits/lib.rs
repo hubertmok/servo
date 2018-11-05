@@ -7,6 +7,9 @@
 
 extern crate cookie as cookie_rs;
 extern crate embedder_traits;
+extern crate headers_core;
+extern crate headers_ext;
+extern crate http;
 extern crate hyper;
 extern crate hyper_serde;
 extern crate image as piston_image;
@@ -15,38 +18,43 @@ extern crate ipc_channel;
 #[macro_use] extern crate log;
 #[macro_use] extern crate malloc_size_of;
 #[macro_use] extern crate malloc_size_of_derive;
+extern crate mime;
 extern crate msg;
 extern crate num_traits;
 extern crate pixels;
 #[macro_use] extern crate serde;
 extern crate servo_arc;
 extern crate servo_url;
-extern crate url;
+#[macro_use] extern crate url;
 extern crate uuid;
 extern crate webrender_api;
 
 use cookie_rs::Cookie;
 use filemanager_thread::FileManagerThreadMsg;
+use headers_core::HeaderMapExt;
+use headers_ext::{ContentType, ReferrerPolicy as ReferrerPolicyHeader};
+use http::{Error as HttpError, HeaderMap};
 use hyper::Error as HyperError;
-use hyper::header::{ContentType, Headers, ReferrerPolicy as ReferrerPolicyHeader};
-use hyper::http::RawStatus;
-use hyper::mime::{Attr, Mime};
+use hyper::StatusCode;
 use hyper_serde::Serde;
 use ipc_channel::Error as IpcError;
 use ipc_channel::ipc::{self, IpcReceiver, IpcSender};
 use ipc_channel::router::ROUTER;
+use mime::Mime;
 use msg::constellation_msg::HistoryStateId;
 use request::{Request, RequestInit};
 use response::{HttpsState, Response, ResponseInit};
 use servo_url::ServoUrl;
 use std::error::Error;
 use storage_thread::StorageThreadMsg;
+use url::percent_encoding;
 
 pub mod blob_url_store;
 pub mod filemanager_thread;
 pub mod image_cache;
 pub mod net_error_list;
 pub mod pub_domains;
+pub mod quality;
 pub mod request;
 pub mod response;
 pub mod storage_thread;
@@ -62,7 +70,7 @@ pub mod image {
 
 /// A loading context, for context-specific sniffing, as defined in
 /// <https://mimesniff.spec.whatwg.org/#context-specific-sniffing>
-#[derive(Clone, Deserialize, MallocSizeOf, Serialize)]
+#[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]
 pub enum LoadContext {
     Browsing,
     Image,
@@ -80,16 +88,16 @@ pub struct CustomResponse {
     #[ignore_malloc_size_of = "Defined in hyper"]
     #[serde(deserialize_with = "::hyper_serde::deserialize",
             serialize_with = "::hyper_serde::serialize")]
-    pub headers: Headers,
+    pub headers: HeaderMap,
     #[ignore_malloc_size_of = "Defined in hyper"]
     #[serde(deserialize_with = "::hyper_serde::deserialize",
             serialize_with = "::hyper_serde::serialize")]
-    pub raw_status: RawStatus,
+    pub raw_status: (StatusCode, String),
     pub body: Vec<u8>,
 }
 
 impl CustomResponse {
-    pub fn new(headers: Headers, raw_status: RawStatus, body: Vec<u8>) -> CustomResponse {
+    pub fn new(headers: HeaderMap, raw_status: (StatusCode, String), body: Vec<u8>) -> CustomResponse {
         CustomResponse {
             headers: headers,
             raw_status: raw_status,
@@ -98,7 +106,7 @@ impl CustomResponse {
     }
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CustomResponseMediator {
     pub response_chan: IpcSender<Option<CustomResponse>>,
     pub load_url: ServoUrl,
@@ -126,30 +134,30 @@ pub enum ReferrerPolicy {
     StrictOriginWhenCrossOrigin,
 }
 
-impl<'a> From<&'a ReferrerPolicyHeader> for ReferrerPolicy {
-    fn from(policy: &'a ReferrerPolicyHeader) -> Self {
-        match *policy {
-            ReferrerPolicyHeader::NoReferrer =>
+impl From<ReferrerPolicyHeader> for ReferrerPolicy {
+    fn from(policy: ReferrerPolicyHeader) -> Self {
+        match policy {
+            ReferrerPolicyHeader::NO_REFERRER =>
                 ReferrerPolicy::NoReferrer,
-            ReferrerPolicyHeader::NoReferrerWhenDowngrade =>
+            ReferrerPolicyHeader::NO_REFERRER_WHEN_DOWNGRADE =>
                 ReferrerPolicy::NoReferrerWhenDowngrade,
-            ReferrerPolicyHeader::SameOrigin =>
+            ReferrerPolicyHeader::SAME_ORIGIN =>
                 ReferrerPolicy::SameOrigin,
-            ReferrerPolicyHeader::Origin =>
+            ReferrerPolicyHeader::ORIGIN =>
                 ReferrerPolicy::Origin,
-            ReferrerPolicyHeader::OriginWhenCrossOrigin =>
+            ReferrerPolicyHeader::ORIGIN_WHEN_CROSS_ORIGIN =>
                 ReferrerPolicy::OriginWhenCrossOrigin,
-            ReferrerPolicyHeader::UnsafeUrl =>
+            ReferrerPolicyHeader::UNSAFE_URL =>
                 ReferrerPolicy::UnsafeUrl,
-            ReferrerPolicyHeader::StrictOrigin =>
+            ReferrerPolicyHeader::STRICT_ORIGIN =>
                 ReferrerPolicy::StrictOrigin,
-            ReferrerPolicyHeader::StrictOriginWhenCrossOrigin =>
+            ReferrerPolicyHeader::STRICT_ORIGIN_WHEN_CROSS_ORIGIN =>
                 ReferrerPolicy::StrictOriginWhenCrossOrigin,
         }
     }
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub enum FetchResponseMsg {
     // todo: should have fields for transmitted/total bytes
     ProcessRequestBody,
@@ -185,7 +193,7 @@ pub trait FetchTaskTarget {
     fn process_response_eof(&mut self, response: &Response);
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum FilteredMetadata {
     Basic(Metadata),
     Cors(Metadata),
@@ -193,7 +201,7 @@ pub enum FilteredMetadata {
     OpaqueRedirect
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum FetchMetadata {
     Unfiltered(Metadata),
     Filtered {
@@ -276,7 +284,7 @@ pub trait IpcSend<T>
 // the "Arc" hack implicitly in future.
 // See discussion: http://logs.glob.uno/?c=mozilla%23servo&s=16+May+2016&e=16+May+2016#c430412
 // See also: https://github.com/servo/servo/blob/735480/components/script/script_thread.rs#L313
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ResourceThreads {
     core_thread: CoreResourceThread,
     storage_thread: IpcSender<StorageThreadMsg>,
@@ -314,25 +322,25 @@ impl IpcSend<StorageThreadMsg> for ResourceThreads {
 // Ignore the sub-fields
 malloc_size_of_is_0!(ResourceThreads);
 
-#[derive(Clone, Copy, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 pub enum IncludeSubdomains {
     Included,
     NotIncluded,
 }
 
-#[derive(Deserialize, MallocSizeOf, Serialize)]
+#[derive(Debug, Deserialize, MallocSizeOf, Serialize)]
 pub enum MessageData {
     Text(String),
     Binary(Vec<u8>),
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub enum WebSocketDomAction {
     SendMessage(MessageData),
     Close(Option<u16>, Option<String>),
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub enum WebSocketNetworkEvent {
     ConnectionEstablished {
         protocol_in_use: Option<String>,
@@ -342,7 +350,7 @@ pub enum WebSocketNetworkEvent {
     Fail,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 /// IPC channels to communicate with the script thread about network or DOM events.
 pub enum FetchChannels {
     ResponseMsg(IpcSender<FetchResponseMsg>, /* cancel_chan */ Option<IpcReceiver<()>>),
@@ -352,7 +360,7 @@ pub enum FetchChannels {
     }
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub enum CoreResourceMsg {
     Fetch(RequestInit, FetchChannels),
     /// Initiate a fetch in response to processing a redirection
@@ -393,7 +401,7 @@ pub fn fetch_async<F>(request: RequestInit, core_resource_thread: &CoreResourceT
         CoreResourceMsg::Fetch(request, FetchChannels::ResponseMsg(action_sender, None))).unwrap();
 }
 
-#[derive(Clone, Deserialize, MallocSizeOf, Serialize)]
+#[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]
 pub struct ResourceCorsData {
     /// CORS Preflight flag
     pub preflight: bool,
@@ -402,7 +410,7 @@ pub struct ResourceCorsData {
 }
 
 /// Metadata about a loaded resource, such as is obtained from HTTP headers.
-#[derive(Clone, Deserialize, MallocSizeOf, Serialize)]
+#[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]
 pub struct Metadata {
     /// Final URL after redirects.
     pub final_url: ServoUrl,
@@ -419,7 +427,7 @@ pub struct Metadata {
 
     #[ignore_malloc_size_of = "Defined in hyper"]
     /// Headers
-    pub headers: Option<Serde<Headers>>,
+    pub headers: Option<Serde<HeaderMap>>,
 
     /// HTTP Status
     pub status: Option<(u16, Vec<u8>)>,
@@ -454,16 +462,15 @@ impl Metadata {
     /// Extract the parts of a Mime that we care about.
     pub fn set_content_type(&mut self, content_type: Option<&Mime>) {
         if self.headers.is_none() {
-            self.headers = Some(Serde(Headers::new()));
+            self.headers = Some(Serde(HeaderMap::new()));
         }
 
         if let Some(mime) = content_type {
-            self.headers.as_mut().unwrap().set(ContentType(mime.clone()));
-            self.content_type = Some(Serde(ContentType(mime.clone())));
-            let Mime(_, _, ref parameters) = *mime;
-            for &(ref k, ref v) in parameters {
-                if Attr::Charset == *k {
-                    self.charset = Some(v.to_string());
+            self.headers.as_mut().unwrap().typed_insert(ContentType::from(mime.clone()));
+            self.content_type = Some(Serde(ContentType::from(mime.clone())));
+            for (name, value) in mime.params() {
+                if mime::CHARSET == name {
+                    self.charset = Some(value.to_string());
                 }
             }
         }
@@ -471,7 +478,7 @@ impl Metadata {
 }
 
 /// The creator of a given cookie
-#[derive(Clone, Copy, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 pub enum CookieSource {
     /// An HTTP API
     HTTP,
@@ -518,17 +525,15 @@ pub enum NetworkError {
 }
 
 impl NetworkError {
-    pub fn from_hyper_error(url: &ServoUrl, error: HyperError) -> Self {
-        if let HyperError::Ssl(ref ssl_error) = error {
-            return NetworkError::from_ssl_error(url, &**ssl_error);
-        }
+    pub fn from_hyper_error(error: &HyperError) -> Self {
         NetworkError::Internal(error.description().to_owned())
     }
 
-    pub fn from_ssl_error(url: &ServoUrl, error: &Error) -> Self {
-        NetworkError::SslValidation(url.clone(), error.description().to_owned())
+    pub fn from_http_error(error: &HttpError) -> Self {
+        NetworkError::Internal(error.description().to_owned())
     }
 }
+
 
 /// Normalize `slice`, as defined by
 /// [the Fetch Spec](https://fetch.spec.whatwg.org/#concept-header-value-normalize).
@@ -551,3 +556,17 @@ pub fn trim_http_whitespace(mut slice: &[u8]) -> &[u8] {
 
     slice
 }
+
+pub fn http_percent_encode(bytes: &[u8]) -> String {
+    define_encode_set! {
+        // This encode set is used for HTTP header values and is defined at
+        // https://tools.ietf.org/html/rfc5987#section-3.2
+        pub HTTP_VALUE = [percent_encoding::SIMPLE_ENCODE_SET] | {
+            ' ', '"', '%', '\'', '(', ')', '*', ',', '/', ':', ';', '<', '-', '>', '?',
+            '[', '\\', ']', '{', '}'
+        }
+    }
+
+    url::percent_encoding::percent_encode(bytes, HTTP_VALUE).to_string()
+}
+

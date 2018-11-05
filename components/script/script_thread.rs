@@ -65,9 +65,9 @@ use dom::workletglobalscope::WorkletGlobalScopeInit;
 use embedder_traits::EmbedderMsg;
 use euclid::{Point2D, Vector2D, Rect};
 use fetch::FetchCanceller;
-use hyper::header::{ContentType, HttpDate, Headers, LastModified};
-use hyper::header::ReferrerPolicy as ReferrerPolicyHeader;
-use hyper::mime::{Mime, SubLevel, TopLevel};
+use headers_core::HeaderMapExt;
+use headers_ext::LastModified;
+use headers_ext::ReferrerPolicy as ReferrerPolicyHeader;
 use hyper_serde::Serde;
 use ipc_channel::ipc::{self, IpcSender};
 use js::glue::GetWindowProxyClass;
@@ -76,6 +76,7 @@ use js::jsapi::{JSTracer, SetWindowProxyClass};
 use js::jsval::UndefinedValue;
 use metrics::{MAX_TASK_NS, PaintTimeMetrics};
 use microtask::{MicrotaskQueue, Microtask};
+use mime::{self, Mime};
 use msg::constellation_msg::{BrowsingContextId, HistoryStateId, PipelineId};
 use msg::constellation_msg::{PipelineNamespace, TopLevelBrowsingContextId};
 use net_traits::{FetchMetadata, FetchResponseListener, FetchResponseMsg};
@@ -96,7 +97,7 @@ use script_traits::{ProgressiveWebMetricType, Painter, ScriptMsg, ScriptThreadFa
 use script_traits::{ScriptToConstellationChan, TimerEvent, TimerSchedulerMsg};
 use script_traits::{TimerSource, TouchEventType, TouchId, UntrustedNodeAddress};
 use script_traits::{UpdatePipelineIdReason, WindowSizeData, WindowSizeType};
-use script_traits::CompositorEvent::{KeyEvent, MouseButtonEvent, MouseMoveEvent, ResizeEvent, TouchEvent};
+use script_traits::CompositorEvent::{KeyboardEvent, MouseButtonEvent, MouseMoveEvent, ResizeEvent, TouchEvent};
 use script_traits::webdriver_msg::WebDriverScriptCommand;
 use serviceworkerjob::{Job, JobQueue};
 use servo_atoms::Atom;
@@ -115,6 +116,7 @@ use std::rc::Rc;
 use std::result::Result;
 use std::sync::Arc;
 use std::thread;
+use std::time::SystemTime;
 use style::thread_state::{self, ThreadState};
 use task_queue::{QueuedTask, QueuedTaskConversion, TaskQueue};
 use task_source::TaskSourceName;
@@ -127,7 +129,7 @@ use task_source::performance_timeline::PerformanceTimelineTaskSource;
 use task_source::remote_event::RemoteEventTaskSource;
 use task_source::user_interaction::UserInteractionTaskSource;
 use task_source::websocket::WebsocketTaskSource;
-use time::{get_time, precise_time_ns, Tm};
+use time::{at_utc, get_time, precise_time_ns, Timespec};
 use url::Position;
 use url::percent_encoding::percent_decode;
 use webdriver_handlers;
@@ -501,7 +503,7 @@ pub struct ScriptThread {
     /// events in the event queue.
     chan: MainThreadScriptChan,
 
-    dom_manipulation_task_sender: Sender<MainThreadScriptMsg>,
+    dom_manipulation_task_sender: Box<ScriptChan>,
 
     media_element_task_sender: Sender<MainThreadScriptMsg>,
 
@@ -1020,7 +1022,7 @@ impl ScriptThread {
             task_queue,
 
             chan: MainThreadScriptChan(chan.clone()),
-            dom_manipulation_task_sender: chan.clone(),
+            dom_manipulation_task_sender: boxed_script_sender.clone(),
             media_element_task_sender: chan.clone(),
             user_interaction_task_sender: chan.clone(),
             networking_task_sender: boxed_script_sender.clone(),
@@ -2611,37 +2613,27 @@ impl ScriptThread {
         window.init_window_proxy(&window_proxy);
 
         let last_modified = metadata.headers.as_ref().and_then(|headers| {
-            headers
-                .get()
-                .map(|&LastModified(HttpDate(ref tm))| dom_last_modified(tm))
+            headers.typed_get::<LastModified>()
+                .map(|tm| dom_last_modified(&tm.into()))
         });
-
-        let content_type = metadata
-            .content_type
-            .as_ref()
-            .map(|&Serde(ContentType(ref mimetype))| mimetype.clone());
 
         let loader = DocumentLoader::new_with_threads(
             self.resource_threads.clone(),
             Some(final_url.clone()),
         );
 
-        let is_html_document = match metadata.content_type {
-            Some(Serde(ContentType(Mime(
-                TopLevel::Application,
-                SubLevel::Ext(ref sub_level),
-                _,
-            ))))
-                if sub_level.ends_with("+xml") =>
-            {
-                IsHTMLDocument::NonHTMLDocument
-            },
+        let content_type: Option<Mime> = metadata.content_type
+            .map(Serde::into_inner)
+            .map(Into::into);
 
-            Some(Serde(ContentType(Mime(TopLevel::Application, SubLevel::Xml, _)))) |
-            Some(Serde(ContentType(Mime(TopLevel::Text, SubLevel::Xml, _)))) => {
-                IsHTMLDocument::NonHTMLDocument
-            },
+        let is_html_document = match content_type {
+            Some(ref mime) if mime.type_() == mime::APPLICATION &&
+                mime.suffix() == Some(mime::XML) => IsHTMLDocument::NonHTMLDocument,
 
+            Some(ref mime) if
+                (mime.type_() == mime::TEXT && mime.subtype() == mime::XML) ||
+                (mime.type_() == mime::APPLICATION && mime.subtype() == mime::XML)
+                => IsHTMLDocument::NonHTMLDocument,
             _ => IsHTMLDocument::HTMLDocument,
         };
 
@@ -2650,28 +2642,25 @@ impl ScriptThread {
             None => None,
         };
 
-        let referrer_policy = metadata
-            .headers
-            .as_ref()
-            .map(Serde::deref)
-            .and_then(Headers::get::<ReferrerPolicyHeader>)
-            .map(ReferrerPolicy::from);
+        let referrer_policy = metadata.headers
+                                      .as_ref()
+                                      .map(Serde::deref)
+                                      .and_then(|h| h.typed_get::<ReferrerPolicyHeader>())
+                                      .map(ReferrerPolicy::from);
 
-        let document = Document::new(
-            &window,
-            HasBrowsingContext::Yes,
-            Some(final_url.clone()),
-            incomplete.origin,
-            is_html_document,
-            content_type,
-            last_modified,
-            incomplete.activity,
-            DocumentSource::FromParser,
-            loader,
-            referrer,
-            referrer_policy,
-            incomplete.canceller,
-        );
+        let document = Document::new(&window,
+                                     HasBrowsingContext::Yes,
+                                     Some(final_url.clone()),
+                                     incomplete.origin,
+                                     is_html_document,
+                                     content_type,
+                                     last_modified,
+                                     incomplete.activity,
+                                     DocumentSource::FromParser,
+                                     loader,
+                                     referrer,
+                                     referrer_policy,
+                                     incomplete.canceller);
         document.set_ready_state(DocumentReadyState::Loading);
 
         self.documents
@@ -2823,6 +2812,7 @@ impl ScriptThread {
                     }
                 }
             },
+
             TouchEvent(event_type, identifier, point, node_address) => {
                 let touch_result = self.handle_touch_event(
                     pipeline_id,
@@ -2848,12 +2838,12 @@ impl ScriptThread {
                 }
             },
 
-            KeyEvent(ch, key, state, modifiers) => {
+            KeyboardEvent(key_event) => {
                 let document = match { self.documents.borrow().find_document(pipeline_id) } {
                     Some(document) => document,
                     None => return warn!("Message sent to closed pipeline {}.", pipeline_id),
                 };
-                document.dispatch_key_event(ch, key, state, modifiers);
+                document.dispatch_key_event(key_event);
             },
         }
     }
@@ -3111,7 +3101,7 @@ impl ScriptThread {
         let mut context = ParserContext::new(id, url.clone());
 
         let mut meta = Metadata::default(url);
-        meta.set_content_type(Some(&mime!(Text / Html)));
+        meta.set_content_type(Some(&mime::TEXT_HTML));
 
         // If this page load is the result of a javascript scheme url, map
         // the evaluation result into a response.
@@ -3199,8 +3189,16 @@ impl ScriptThread {
     }
 
     fn perform_a_microtask_checkpoint(&self) {
+        let globals = self.documents.borrow()
+                            .iter()
+                            .map(|(_id, document)| document.global())
+                            .collect();
+
         self.microtask_queue
-            .checkpoint(|id| self.documents.borrow().find_global(id))
+            .checkpoint(
+                |id| self.documents.borrow().find_global(id),
+                globals
+            )
     }
 }
 
@@ -3212,7 +3210,10 @@ impl Drop for ScriptThread {
     }
 }
 
-fn dom_last_modified(tm: &Tm) -> String {
+fn dom_last_modified(tm: &SystemTime) -> String {
+    let tm = tm.duration_since(SystemTime::UNIX_EPOCH).unwrap();
+    let tm = Timespec::new(tm.as_secs() as i64, 0);
+    let tm = at_utc(tm);
     tm.to_local()
         .strftime("%m/%d/%Y %H:%M:%S")
         .unwrap()

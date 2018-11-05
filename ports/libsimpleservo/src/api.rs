@@ -7,13 +7,12 @@ use servo::{self, gl, webrender_api, BrowserId, Servo};
 use servo::compositing::windowing::{AnimationState, EmbedderCoordinates, MouseWindowEvent, WindowEvent, WindowMethods};
 use servo::embedder_traits::EmbedderMsg;
 use servo::embedder_traits::resources::{self, Resource};
-use servo::euclid::{Length, TypedPoint2D, TypedScale, TypedSize2D, TypedVector2D};
+use servo::euclid::{TypedPoint2D, TypedScale, TypedSize2D, TypedVector2D};
 use servo::msg::constellation_msg::TraversalDirection;
 use servo::script_traits::{MouseButton, TouchEventType};
 use servo::servo_config::opts;
 use servo::servo_config::prefs::{PrefValue, PREFS};
 use servo::servo_url::ServoUrl;
-use servo::style_traits::DevicePixel;
 use std::cell::{Cell, RefCell};
 use std::mem;
 use std::path::PathBuf;
@@ -77,6 +76,8 @@ pub trait HostTrait {
     /// has events for Servo, or Servo has woken up the embedder event loop via
     /// EventLoopWaker).
     fn on_animating_changed(&self, animating: bool);
+    /// Servo finished shutting down.
+    fn on_shutdown_complete(&self);
 }
 
 pub struct ServoGlue {
@@ -169,6 +170,12 @@ pub fn init(
     Ok(())
 }
 
+pub fn deinit() {
+    SERVO.with(|s| {
+        s.replace(None).unwrap().deinit()
+    });
+}
+
 impl ServoGlue {
     fn get_browser_id(&self) -> Result<BrowserId, &'static str> {
         let browser_id = match self.browser_id {
@@ -177,6 +184,17 @@ impl ServoGlue {
         };
         Ok(browser_id)
     }
+
+    /// Request shutdown. Will call on_shutdown_complete.
+    pub fn request_shutdown(&mut self) -> Result<(), &'static str> {
+        self.process_event(WindowEvent::Quit)
+    }
+
+    /// Call after on_shutdown_complete
+    pub fn deinit(self) {
+        self.servo.deinit();
+    }
+
     /// This is the Servo heartbeat. This needs to be called
     /// everytime wakeup is called or when embedder wants Servo
     /// to act on its pending events.
@@ -404,18 +422,20 @@ impl ServoGlue {
                         self.events.push(WindowEvent::Quit);
                     }
                 },
+                EmbedderMsg::Shutdown => {
+                    self.callbacks.host_callbacks.on_shutdown_complete();
+                },
                 EmbedderMsg::Status(..) |
                 EmbedderMsg::SelectFiles(..) |
                 EmbedderMsg::MoveTo(..) |
                 EmbedderMsg::ResizeTo(..) |
-                EmbedderMsg::KeyEvent(..) |
+                EmbedderMsg::Keyboard(..) |
                 EmbedderMsg::SetCursor(..) |
                 EmbedderMsg::NewFavicon(..) |
                 EmbedderMsg::HeadParsed |
                 EmbedderMsg::SetFullscreenState(..) |
                 EmbedderMsg::ShowIME(..) |
                 EmbedderMsg::HideIME |
-                EmbedderMsg::Shutdown |
                 EmbedderMsg::Panic(..) => {},
             }
         }
@@ -433,11 +453,7 @@ struct ServoCallbacks {
 }
 
 impl WindowMethods for ServoCallbacks {
-    fn prepare_for_composite(
-        &self,
-        _width: Length<u32, DevicePixel>,
-        _height: Length<u32, DevicePixel>,
-    ) -> bool {
+    fn prepare_for_composite(&self) -> bool {
         debug!("WindowMethods::prepare_for_composite");
         self.host_callbacks.make_current();
         true

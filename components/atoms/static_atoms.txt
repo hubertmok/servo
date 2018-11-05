@@ -74,6 +74,8 @@ scan
 screen
 scroll-position
 search
+seeked
+seeking
 select
 serif
 statechange
@@ -86,6 +88,7 @@ time
 timeupdate
 toggle
 transitionend
+unhandledrejection
 unload
 url
 waiting

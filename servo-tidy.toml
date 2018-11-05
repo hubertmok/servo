@@ -25,6 +25,7 @@ rand = [
   "rayon-core",
   "servo_rand",
   "tempfile",
+  "tokio-threadpool",
   "uuid",
   "ws",
 ]
@@ -32,8 +33,8 @@ rand = [
 [ignore]
 # Ignored packages with duplicated versions
 packages = [
-  "bitflags",
   "core-graphics",
+  "crossbeam-deque",
   "crossbeam-epoch",
   "crossbeam-utils",
   "log",
@@ -42,9 +43,8 @@ packages = [
   "proc-macro2",
   "quote",
   "rand",
-  # TODO: remove slab when #21426 lands
-  "slab",
   "syn",
+  "unicase",
   "winapi",
 ]
 # Files that are ignored for all tidy and lint checks.
@@ -77,6 +77,10 @@ files = [
 directories = [
   # Upstream
   "./support/android/apk",
+  "./support/magicleap/Servo2D/.vscode",
+  "./support/magicleap/Servo2D/code/inc.gen",
+  "./support/magicleap/Servo2D/code/src.gen",
+  "./support/magicleap/Servo2D/pipeline",
   "./tests/wpt/harness",
   "./tests/wpt/update",
   "./tests/wpt/web-platform-tests",

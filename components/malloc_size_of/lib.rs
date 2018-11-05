@@ -52,6 +52,8 @@ extern crate hyper;
 #[cfg(feature = "servo")]
 extern crate hyper_serde;
 #[cfg(feature = "servo")]
+extern crate keyboard_types;
+#[cfg(feature = "servo")]
 extern crate mozjs as js;
 extern crate selectors;
 #[cfg(feature = "servo")]
@@ -956,51 +958,22 @@ malloc_size_of_is_0!(webrender_api::StickyOffsetBounds);
 malloc_size_of_is_0!(webrender_api::TransformStyle);
 
 #[cfg(feature = "servo")]
-impl MallocSizeOf for xml5ever::QualName {
+impl MallocSizeOf for keyboard_types::Key {
     fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
-        self.prefix.size_of(ops) + self.ns.size_of(ops) + self.local.size_of(ops)
-    }
-}
-
-#[cfg(feature = "servo")]
-impl MallocSizeOf for hyper::header::Headers {
-    fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
-        self.iter().fold(0, |acc, x| {
-            let name = x.name();
-            let raw = self.get_raw(name);
-            acc + raw.size_of(ops)
-        })
-    }
-}
-
-#[cfg(feature = "servo")]
-impl MallocSizeOf for hyper::header::ContentType {
-    fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
-        self.0.size_of(ops)
-    }
-}
-
-#[cfg(feature = "servo")]
-impl MallocSizeOf for hyper::mime::Mime {
-    fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
-        self.0.size_of(ops) + self.1.size_of(ops) + self.2.size_of(ops)
-    }
-}
-
-#[cfg(feature = "servo")]
-impl MallocSizeOf for hyper::mime::Attr {
-    fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
-        match *self {
-            hyper::mime::Attr::Ext(ref s) => s.size_of(ops),
+        match self {
+            keyboard_types::Key::Character(ref s) => s.size_of(ops),
             _ => 0,
         }
     }
 }
 
 #[cfg(feature = "servo")]
-impl MallocSizeOf for hyper::mime::Value {
-    fn size_of(&self, _ops: &mut MallocSizeOfOps) -> usize {
-        self.len() // Length of string value in bytes (not the char length of a string)!
+malloc_size_of_is_0!(keyboard_types::Modifiers);
+
+#[cfg(feature = "servo")]
+impl MallocSizeOf for xml5ever::QualName {
+    fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
+        self.prefix.size_of(ops) + self.ns.size_of(ops) + self.local.size_of(ops)
     }
 }
 
@@ -1031,12 +1004,9 @@ impl<T> MallocSizeOf for servo_channel::Sender<T> {
 }
 
 #[cfg(feature = "servo")]
-impl MallocSizeOf for hyper::status::StatusCode {
-    fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
-        match *self {
-            hyper::status::StatusCode::Unregistered(u) => u.size_of(ops),
-            _ => 0,
-        }
+impl MallocSizeOf for hyper::StatusCode {
+    fn size_of(&self, _ops: &mut MallocSizeOfOps) -> usize {
+        0
     }
 }
 

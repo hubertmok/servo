@@ -25,6 +25,7 @@ ProductName = "Servo"
 [features]
 default = ["unstable", "default-except-unstable"]
 default-except-unstable = ["webdriver", "max_log_level"]
+disable-native-bluetooth = ["libservo/disable-native-bluetooth"]
 max_log_level = ["log/release_max_level_info"]
 webdriver = ["libservo/webdriver"]
 energy-profiling = ["libservo/energy-profiling"]
@@ -40,6 +41,7 @@ crossbeam-channel = "0.2"
 euclid = "0.19"
 gleam = "0.6"
 glutin = "0.18"
+keyboard-types = {version = "0.4.2-servo", features = ["serde"]}
 lazy_static = "1"
 libservo = {path = "../../components/servo"}
 log = "0.4"
@@ -58,8 +60,5 @@ winapi = "0.2"
 user32-sys = "0.2"
 gdi32-sys = "0.2"
 
-[target.'cfg(target_os = "macos")'.dependencies]
-osmesa-src = {git = "https://github.com/servo/osmesa-src"}
-
-[target.x86_64-unknown-linux-gnu.dependencies]
+[target.'cfg(any(target_os = "macos", all(target_arch = "x86_64", target_os = "linux")))'.dependencies]
 osmesa-src = {git = "https://github.com/servo/osmesa-src"}

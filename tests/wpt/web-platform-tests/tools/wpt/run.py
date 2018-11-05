@@ -264,6 +264,11 @@ class Chrome(BrowserSetup):
         if kwargs["browser_channel"] == "dev":
             logger.info("Automatically turning on experimental features for Chrome Dev")
             kwargs["binary_args"].append("--enable-experimental-web-platform-features")
+            # TODO(foolip): remove after unified plan is enabled on Chrome stable
+            kwargs["binary_args"].append("--enable-features=RTCUnifiedPlanByDefault")
+
+        # Allow audio autoplay without a user gesture.
+        kwargs["binary_args"].append("--autoplay-policy=no-user-gesture-required")
 
         # Allow WebRTC tests to call getUserMedia.
         kwargs["binary_args"] += ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"]
@@ -414,6 +419,11 @@ class Servo(BrowserSetup):
             kwargs["binary"] = binary
 
 
+class ServoWebDriver(Servo):
+    name = "servodriver"
+    browser_cls = browser.ServoWebDriver
+
+
 class WebKit(BrowserSetup):
     name = "webkit"
     browser_cls = browser.WebKit
@@ -436,7 +446,7 @@ product_setup = {
     "safari": Safari,
     "safari_webdriver": SafariWebDriver,
     "servo": Servo,
-    "servodriver": Servo,
+    "servodriver": ServoWebDriver,
     "sauce": Sauce,
     "opera": Opera,
     "webkit": WebKit,
@@ -482,7 +492,7 @@ def setup_wptrunner(venv, prompt=True, install_browser=False, **kwargs):
             if channel != kwargs["channel"]:
                 logger.info("Interpreting channel '%s' as '%s'" % (kwargs["channel"],
                                                                    channel))
-                kwargs["browser_channel"] = channel
+            kwargs["browser_channel"] = channel
         else:
             logger.info("Valid channels for %s not known; using argument unmodified" % kwargs["product"])
     del kwargs["channel"]
@@ -499,7 +509,8 @@ def setup_wptrunner(venv, prompt=True, install_browser=False, **kwargs):
 
     venv.install_requirements(os.path.join(wptrunner_path, "requirements.txt"))
 
-    kwargs['browser_version'] = setup_cls.browser.version(kwargs.get("binary"))
+    kwargs['browser_version'] = setup_cls.browser.version(binary=kwargs.get("binary"),
+                                                          webdriver_binary=kwargs.get("webdriver_binary"))
     return kwargs
 
 

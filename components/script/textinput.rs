@@ -7,7 +7,7 @@
 use clipboard_provider::ClipboardProvider;
 use dom::bindings::str::DOMString;
 use dom::keyboardevent::KeyboardEvent;
-use msg::constellation_msg::{Key, KeyModifiers};
+use keyboard_types::{Key, KeyState, Modifiers, ShortcutMatcher};
 use std::borrow::ToOwned;
 use std::cmp::{max, min};
 use std::default::Default;
@@ -130,17 +130,11 @@ pub enum Direction {
     Backward,
 }
 
-/// Was the keyboard event accompanied by the standard control modifier,
-/// i.e. cmd on Mac OS or ctrl on other platforms.
+// Some shortcuts use Cmd on Mac and Control on other systems.
 #[cfg(target_os = "macos")]
-fn is_control_key(mods: KeyModifiers) -> bool {
-    mods.contains(KeyModifiers::SUPER) && !mods.contains(KeyModifiers::CONTROL | KeyModifiers::ALT)
-}
-
+pub const CMD_OR_CONTROL: Modifiers = Modifiers::META;
 #[cfg(not(target_os = "macos"))]
-fn is_control_key(mods: KeyModifiers) -> bool {
-    mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::SUPER | KeyModifiers::ALT)
-}
+pub const CMD_OR_CONTROL: Modifiers = Modifiers::CONTROL;
 
 /// The length in bytes of the first n characters in a UTF-8 string.
 ///
@@ -299,6 +293,12 @@ impl<T: ClipboardProvider> TextInput<T> {
 
     // Check that the selection is valid.
     fn assert_ok_selection(&self) {
+        debug!(
+            "edit_point: {:?}, selection_origin: {:?}, direction: {:?}",
+            self.edit_point,
+            self.selection_origin,
+            self.selection_direction
+        );
         if let Some(begin) = self.selection_origin {
             debug_assert!(begin.line < self.lines.len());
             debug_assert!(begin.index <= self.lines[begin.line].len());
@@ -512,11 +512,6 @@ impl<T: ClipboardProvider> TextInput<T> {
             if self.selection_origin.is_none() {
                 self.selection_origin = Some(self.edit_point);
             }
-
-            self.selection_direction = match adjust {
-                Direction::Backward => SelectionDirection::Backward,
-                Direction::Forward => SelectionDirection::Forward,
-            };
         } else {
             if self.has_selection() {
                 self.edit_point = match adjust {
@@ -528,6 +523,23 @@ impl<T: ClipboardProvider> TextInput<T> {
             }
         }
         false
+    }
+
+    /// Update the field selection_direction.
+    ///
+    /// When the edit_point (or focus) is before the selection_origin (or anchor)
+    /// you have a backward selection. Otherwise you have a forward selection.
+    fn update_selection_direction(&mut self) {
+        debug!(
+            "edit_point: {:?}, selection_origin: {:?}",
+            self.edit_point,
+            self.selection_origin
+        );
+        self.selection_direction = if Some(self.edit_point) < self.selection_origin {
+            SelectionDirection::Backward
+        } else {
+            SelectionDirection::Forward
+        }
     }
 
     fn perform_horizontal_adjustment(&mut self, adjust: isize, select: Selection) {
@@ -554,6 +566,7 @@ impl<T: ClipboardProvider> TextInput<T> {
                 );
             }
         }
+        self.update_selection_direction();
         self.assert_ok_selection();
     }
 
@@ -685,155 +698,139 @@ impl<T: ClipboardProvider> TextInput<T> {
 
     /// Process a given `KeyboardEvent` and return an action for the caller to execute.
     pub fn handle_keydown(&mut self, event: &KeyboardEvent) -> KeyReaction {
-        if let Some(key) = event.get_key() {
-            self.handle_keydown_aux(event.printable(), key, event.get_key_modifiers())
-        } else {
-            KeyReaction::Nothing
-        }
+        let key = event.key();
+        let mods = event.modifiers();
+        self.handle_keydown_aux(key, mods, cfg!(target_os = "macos"))
     }
 
+    // This function exists for easy unit testing.
+    // To test Mac OS shortcuts on other systems a flag is passed.
     pub fn handle_keydown_aux(
         &mut self,
-        printable: Option<char>,
         key: Key,
-        mods: KeyModifiers,
+        mut mods: Modifiers,
+        macos: bool,
     ) -> KeyReaction {
-        let maybe_select = if mods.contains(KeyModifiers::SHIFT) {
+        let maybe_select = if mods.contains(Modifiers::SHIFT) {
             Selection::Selected
         } else {
             Selection::NotSelected
         };
-
-        match (printable, key) {
-            (_, Key::B) if mods.contains(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+        mods.remove(Modifiers::SHIFT);
+        ShortcutMatcher::new(KeyState::Down, key.clone(), mods)
+            .shortcut(Modifiers::CONTROL | Modifiers::ALT, 'B', || {
                 self.adjust_horizontal_by_word(Direction::Backward, maybe_select);
                 KeyReaction::RedrawSelection
-            },
-            (_, Key::F) if mods.contains(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+            })
+            .shortcut(Modifiers::CONTROL | Modifiers::ALT, 'F', || {
                 self.adjust_horizontal_by_word(Direction::Forward, maybe_select);
                 KeyReaction::RedrawSelection
-            },
-            (_, Key::A) if mods.contains(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+            })
+            .shortcut(Modifiers::CONTROL | Modifiers::ALT, 'A', || {
                 self.adjust_horizontal_to_line_end(Direction::Backward, maybe_select);
                 KeyReaction::RedrawSelection
-            },
-            (_, Key::E) if mods.contains(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+            })
+            .shortcut(Modifiers::CONTROL | Modifiers::ALT, 'E', || {
                 self.adjust_horizontal_to_line_end(Direction::Forward, maybe_select);
                 KeyReaction::RedrawSelection
-            },
-            #[cfg(target_os = "macos")]
-            (None, Key::A) if mods == KeyModifiers::CONTROL =>
-            {
+            })
+            .optional_shortcut(macos, Modifiers::CONTROL, 'A', || {
                 self.adjust_horizontal_to_line_end(Direction::Backward, maybe_select);
                 KeyReaction::RedrawSelection
-            }
-            #[cfg(target_os = "macos")]
-            (None, Key::E) if mods == KeyModifiers::CONTROL =>
-            {
+            })
+            .optional_shortcut(macos, Modifiers::CONTROL, 'E', || {
                 self.adjust_horizontal_to_line_end(Direction::Forward, maybe_select);
                 KeyReaction::RedrawSelection
-            }
-            (_, Key::A) if is_control_key(mods) => {
+            })
+            .shortcut(CMD_OR_CONTROL, 'A', || {
                 self.select_all();
                 KeyReaction::RedrawSelection
-            },
-            (_, Key::C) if is_control_key(mods) => {
+            })
+            .shortcut(CMD_OR_CONTROL, 'C', || {
                 if let Some(text) = self.get_selection_text() {
                     self.clipboard_provider.set_clipboard_contents(text);
                 }
                 KeyReaction::DispatchInput
-            },
-            (_, Key::V) if is_control_key(mods) => {
+            })
+            .shortcut(CMD_OR_CONTROL, 'V', || {
                 let contents = self.clipboard_provider.clipboard_contents();
                 self.insert_string(contents);
                 KeyReaction::DispatchInput
-            },
-            (Some(c), _) => {
-                self.insert_char(c);
-                KeyReaction::DispatchInput
-            },
-            (None, Key::Delete) => {
+            })
+            .shortcut(Modifiers::empty(), Key::Delete, || {
                 self.delete_char(Direction::Forward);
                 KeyReaction::DispatchInput
-            },
-            (None, Key::Backspace) => {
+            })
+            .shortcut(Modifiers::empty(), Key::Backspace, || {
                 self.delete_char(Direction::Backward);
                 KeyReaction::DispatchInput
-            },
-            #[cfg(target_os = "macos")]
-            (None, Key::Left) if mods.contains(KeyModifiers::SUPER) =>
-            {
+            })
+            .optional_shortcut(macos, Modifiers::META, Key::ArrowLeft, || {
                 self.adjust_horizontal_to_line_end(Direction::Backward, maybe_select);
                 KeyReaction::RedrawSelection
-            }
-            #[cfg(target_os = "macos")]
-            (None, Key::Right) if mods.contains(KeyModifiers::SUPER) =>
-            {
+            })
+            .optional_shortcut(macos, Modifiers::META, Key::ArrowRight, || {
                 self.adjust_horizontal_to_line_end(Direction::Forward, maybe_select);
                 KeyReaction::RedrawSelection
-            }
-            #[cfg(target_os = "macos")]
-            (None, Key::Up) if mods.contains(KeyModifiers::SUPER) =>
-            {
+            })
+            .optional_shortcut(macos, Modifiers::META, Key::ArrowUp, || {
                 self.adjust_horizontal_to_limit(Direction::Backward, maybe_select);
                 KeyReaction::RedrawSelection
-            }
-            #[cfg(target_os = "macos")]
-            (None, Key::Down) if mods.contains(KeyModifiers::SUPER) =>
-            {
+            })
+            .optional_shortcut(macos, Modifiers::META, Key::ArrowDown, || {
                 self.adjust_horizontal_to_limit(Direction::Forward, maybe_select);
                 KeyReaction::RedrawSelection
-            }
-            (None, Key::Left) if mods.contains(KeyModifiers::ALT) => {
+            })
+            .shortcut(Modifiers::ALT, Key::ArrowLeft, || {
                 self.adjust_horizontal_by_word(Direction::Backward, maybe_select);
                 KeyReaction::RedrawSelection
-            },
-            (None, Key::Right) if mods.contains(KeyModifiers::ALT) => {
+            })
+            .shortcut(Modifiers::ALT, Key::ArrowRight, || {
                 self.adjust_horizontal_by_word(Direction::Forward, maybe_select);
                 KeyReaction::RedrawSelection
-            },
-            (None, Key::Left) => {
+            })
+            .shortcut(Modifiers::empty(), Key::ArrowLeft, || {
                 self.adjust_horizontal_by_one(Direction::Backward, maybe_select);
                 KeyReaction::RedrawSelection
-            },
-            (None, Key::Right) => {
+            })
+            .shortcut(Modifiers::empty(), Key::ArrowRight, || {
                 self.adjust_horizontal_by_one(Direction::Forward, maybe_select);
                 KeyReaction::RedrawSelection
-            },
-            (None, Key::Up) => {
+            })
+            .shortcut(Modifiers::empty(), Key::ArrowUp, || {
                 self.adjust_vertical(-1, maybe_select);
                 KeyReaction::RedrawSelection
-            },
-            (None, Key::Down) => {
+            })
+            .shortcut(Modifiers::empty(), Key::ArrowDown, || {
                 self.adjust_vertical(1, maybe_select);
                 KeyReaction::RedrawSelection
-            },
-            (None, Key::Enter) | (None, Key::KpEnter) => self.handle_return(),
-            (None, Key::Home) => {
-                #[cfg(not(target_os = "macos"))]
-                {
-                    self.edit_point.index = 0;
-                }
+            })
+            .shortcut(Modifiers::empty(), Key::Enter, || self.handle_return())
+            .optional_shortcut(macos, Modifiers::empty(), Key::Home, || {
+                self.edit_point.index = 0;
                 KeyReaction::RedrawSelection
-            },
-            (None, Key::End) => {
-                #[cfg(not(target_os = "macos"))]
-                {
-                    self.edit_point.index = self.current_line_length();
-                    self.assert_ok_selection();
-                }
+            })
+            .optional_shortcut(macos, Modifiers::empty(), Key::End, || {
+                self.edit_point.index = self.current_line_length();
+                self.assert_ok_selection();
                 KeyReaction::RedrawSelection
-            },
-            (None, Key::PageUp) => {
+            })
+            .shortcut(Modifiers::empty(), Key::PageUp, || {
                 self.adjust_vertical(-28, maybe_select);
                 KeyReaction::RedrawSelection
-            },
-            (None, Key::PageDown) => {
+            })
+            .shortcut(Modifiers::empty(), Key::PageDown, || {
                 self.adjust_vertical(28, maybe_select);
                 KeyReaction::RedrawSelection
-            },
-            _ => KeyReaction::Nothing,
-        }
+            })
+            .otherwise(|| {
+                if let Key::Character(ref c) = key {
+                    self.insert_string(c.as_str());
+                    return KeyReaction::DispatchInput;
+                }
+                KeyReaction::Nothing
+            })
+            .unwrap()
     }
 
     /// Whether the content is empty.
